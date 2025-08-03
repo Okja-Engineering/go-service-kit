@@ -1,0 +1,29 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "$id": "https://tools.ietf.org/rfc/rfc7807.txt",
+    "title": "Error Response",
+    "type": "object",
+    "required": ["type", "title"],
+    "properties": {
+      "type": {
+        "type": "string",
+        "description": "The error type"
+      },
+      "title": {
+        "type": "string",
+        "description": "The error title"
+      },
+      "status": {
+        "type": "integer",
+        "description": "The error status code"
+      },
+      "detail": {
+        "type": "string",
+        "description": "Details of the error"
+      },
+      "instance": {
+        "type": "string",
+        "description": "Error instance"
+      }
+    }
+}
