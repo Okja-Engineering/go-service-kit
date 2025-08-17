@@ -7,6 +7,9 @@ on:
     paths:
       - "pkg/**"
       - ".github/workflows/**"
+      - "go.mod"
+      - "go.sum"
+      - "Makefile"
   pull_request:
     branches: [main]
 
@@ -48,6 +51,17 @@ jobs:
           go install github.com/jstemmer/go-junit-report@latest
           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin
   
+      - name: "Verify dependencies"
+        run: |
+          go mod download
+          go mod verify
+          go mod tidy
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "go.mod or go.sum has uncommitted changes"
+            git diff
+            exit 1
+          fi
+
       - name: "Check code & lint"
         run: |
           go get ./...

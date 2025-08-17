@@ -25,7 +25,7 @@ func FilteredRequestLogger(f middleware.LogFormatter, urlRegEx *regexp.Regexp) f
 	return func(next http.Handler) http.Handler {
 		fn := func(w http.ResponseWriter, r *http.Request) {
 			// Extra logic to filter out certain URLs from logging
-			if urlRegEx.MatchString(r.URL.String()) {
+			if urlRegEx != nil && urlRegEx.MatchString(r.URL.String()) {
 				next.ServeHTTP(w, r)
 				return
 			}
