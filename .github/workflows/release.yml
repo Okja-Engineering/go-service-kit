@@ -76,24 +76,22 @@ jobs:
 
       - name: Create Release
         if: steps.changelog.outputs.skip != 'true'
-        uses: actions/create-release@v1
+        run: |
+          # Create the release using GitHub CLI
+          gh release create ${{ steps.get_version.outputs.tag }} \
+            --title "Release ${{ steps.get_version.outputs.tag }}" \
+            --notes "## What's Changed
+
+          ${{ steps.changelog.outputs.changelog }}
+
+          ## Installation
+
+          \`\`\`bash
+          go get github.com/Okja-Engineering/go-service-kit@${{ steps.get_version.outputs.tag }}
+          \`\`\`" \
+            --repo ${{ github.repository }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ steps.get_version.outputs.tag }}
-          release_name: Release ${{ steps.get_version.outputs.tag }}
-          body: |
-            ## What's Changed
-            
-            ${{ steps.changelog.outputs.changelog }}
-            
-            ## Installation
-            
-            ```bash
-            go get github.com/Okja-Engineering/go-service-kit@${{ steps.get_version.outputs.tag }}
-            ```
-          draft: false
-          prerelease: false
 
       - name: Update go.mod version
         if: steps.changelog.outputs.skip != 'true'
