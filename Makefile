@@ -38,3 +38,28 @@ docs: install-tools
 
 clean:
 	rm -f server
+
+version: ## Show current version
+	@echo "Current version: $(VERSION)"
+
+release-patch: ## Create a patch release (0.1.0 -> 0.1.1)
+	@echo "Creating patch release..."
+	@git tag -a v$(VERSION) -m "Release v$(VERSION)"
+	@git push origin v$(VERSION)
+	@echo "✅ Released v$(VERSION)"
+
+release-minor: ## Create a minor release (0.1.0 -> 0.2.0)
+	@echo "Creating minor release..."
+	@git tag -a v$(VERSION) -m "Release v$(VERSION)"
+	@git push origin v$(VERSION)
+	@echo "✅ Released v$(VERSION)"
+
+release-major: ## Create a major release (1.0.0 -> 2.0.0)
+	@echo "Creating major release..."
+	@git tag -a v$(VERSION) -m "Release v$(VERSION)"
+	@git push origin v$(VERSION)
+	@echo "✅ Released v$(VERSION)"
+
+next-version: ## Show what the next patch version would be
+	@echo "Current: $(VERSION)"
+	@echo "Next patch: $(shell echo $(VERSION) | awk -F. '{print $$1"."$$2"."$$3+1}')"
