@@ -4,161 +4,334 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/go-chi/chi/v5"
+	"time"
 )
 
-func TestSimpleCORSMiddleware(t *testing.T) {
-	base := NewBase("TestService", "1.0.0", "test-build", true)
-	router := chi.NewRouter()
+func TestRateLimitByIP(t *testing.T) {
+	base := NewBase("test", "1.0.0", "test", true)
 
-	// Add CORS middleware
-	router.Use(base.SimpleCORSMiddleware)
+	// Create a very restrictive config for testing
+	config := &RateLimiterConfig{
+		RequestsPerSecond: 1.0, // 1 request per second
+		Burst:             1,   // Allow 1 burst
+		Window:            1 * time.Second,
+	}
 
-	// Add a test endpoint
-	router.Get("/test", func(w http.ResponseWriter, r *http.Request) {
+	middleware := base.RateLimitByIP(config)
+
+	// Create a simple handler
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte("test")); err != nil {
+		if _, err := w.Write([]byte("success")); err != nil {
 			t.Errorf("Failed to write response: %v", err)
 		}
 	})
 
-	// Test preflight request
-	req := httptest.NewRequest("OPTIONS", "/test", nil)
-	req.Header.Set("Origin", "http://localhost:3000")
-	req.Header.Set("Access-Control-Request-Method", "GET")
-	req.Header.Set("Access-Control-Request-Headers", "Content-Type")
+	// Wrap with rate limiting
+	wrappedHandler := middleware(handler)
 
+	// Test successful request
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "192.168.1.1:12345"
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
 
-	// Check CORS headers
-	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
-		t.Errorf("Expected Access-Control-Allow-Origin '*', got '%s'", w.Header().Get("Access-Control-Allow-Origin"))
+	wrappedHandler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
 	}
 
-	if w.Header().Get("Access-Control-Allow-Methods") == "" {
-		t.Error("Expected Access-Control-Allow-Methods to be set")
+	// Test rate limit exceeded
+	w2 := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(w2, req)
+
+	if w2.Code != http.StatusTooManyRequests {
+		t.Errorf("Expected status 429, got %d", w2.Code)
 	}
 
-	if w.Header().Get("Access-Control-Allow-Headers") == "" {
-		t.Error("Expected Access-Control-Allow-Headers to be set")
+	// Check rate limit headers
+	if w2.Header().Get("X-RateLimit-Limit") == "" {
+		t.Error("Expected X-RateLimit-Limit header")
 	}
 
-	if w.Header().Get("Access-Control-Allow-Credentials") != "true" {
-		t.Errorf("Expected Access-Control-Allow-Credentials 'true', got '%s'",
-			w.Header().Get("Access-Control-Allow-Credentials"))
+	if w2.Header().Get("X-RateLimit-Remaining") == "" {
+		t.Error("Expected X-RateLimit-Remaining header")
 	}
 }
 
-func TestJWTRequestEnricher(t *testing.T) {
-	base := NewBase("TestService", "1.0.0", "test-build", true)
-	router := chi.NewRouter()
+func TestRateLimitByToken(t *testing.T) {
+	base := NewBase("test", "1.0.0", "test", true)
 
-	// Add JWT enricher middleware
-	router.Use(base.JWTRequestEnricher("user_id", "sub"))
+	config := &RateLimiterConfig{
+		RequestsPerSecond: 1.0,
+		Burst:             1,
+		Window:            1 * time.Second,
+	}
 
-	// Add a test endpoint that checks for enriched context
-	router.Get("/test", func(w http.ResponseWriter, r *http.Request) {
-		userID := r.Context().Value("user_id")
-		if userID != nil {
-			w.WriteHeader(http.StatusOK)
-			if _, err := w.Write([]byte(userID.(string))); err != nil {
-				t.Errorf("Failed to write response: %v", err)
-			}
-		} else {
-			w.WriteHeader(http.StatusNoContent)
+	middleware := base.RateLimitByToken(config)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte("success")); err != nil {
+			t.Errorf("Failed to write response: %v", err)
 		}
 	})
 
+	wrappedHandler := middleware(handler)
+
+	// Test with valid token
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer test-token-123")
+	w := httptest.NewRecorder()
+
+	wrappedHandler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+
+	// Test rate limit exceeded
+	w2 := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(w2, req)
+
+	if w2.Code != http.StatusTooManyRequests {
+		t.Errorf("Expected status 429, got %d", w2.Code)
+	}
+
+	// Test without token (should pass through)
+	req3 := httptest.NewRequest("GET", "/", nil)
+	w3 := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(w3, req3)
+
+	if w3.Code != http.StatusOK {
+		t.Errorf("Expected status 200 for request without token, got %d", w3.Code)
+	}
+}
+
+func TestRateLimitByUserID(t *testing.T) {
+	base := NewBase("test", "1.0.0", "test", true)
+
+	config := &RateLimiterConfig{
+		RequestsPerSecond: 1.0,
+		Burst:             1,
+		Window:            1 * time.Second,
+	}
+
+	middleware := base.RateLimitByUserID(config)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte("success")); err != nil {
+			t.Errorf("Failed to write response: %v", err)
+		}
+	})
+
+	wrappedHandler := middleware(handler)
+
+	// Test with JWT containing user ID
+	// This is a mock JWT with "sub": "user123" in the payload
+	mockJWT := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+		"eyJzdWIiOiJ1c2VyMTIzIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ." +
+		"SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+mockJWT)
+	w := httptest.NewRecorder()
+
+	wrappedHandler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+
+	// Test rate limit exceeded
+	w2 := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(w2, req)
+
+	if w2.Code != http.StatusTooManyRequests {
+		t.Errorf("Expected status 429, got %d", w2.Code)
+	}
+}
+
+func TestGetClientIP(t *testing.T) {
 	tests := []struct {
-		name           string
-		authHeader     string
-		expectedStatus int
-		expectedBody   string
+		name       string
+		headers    map[string]string
+		remoteAddr string
+		expected   string
 	}{
 		{
-			name:           "no auth header",
-			authHeader:     "",
-			expectedStatus: http.StatusNoContent,
-			expectedBody:   "",
+			name: "X-Forwarded-For single IP",
+			headers: map[string]string{
+				"X-Forwarded-For": "192.168.1.1",
+			},
+			expected: "192.168.1.1",
 		},
 		{
-			name:           "invalid auth header format",
-			authHeader:     "Invalid",
-			expectedStatus: http.StatusNoContent,
-			expectedBody:   "",
+			name: "X-Forwarded-For multiple IPs",
+			headers: map[string]string{
+				"X-Forwarded-For": "192.168.1.1, 10.0.0.1, 172.16.0.1",
+			},
+			expected: "192.168.1.1",
 		},
 		{
-			name:           "non-bearer token",
-			authHeader:     "Basic dXNlcjpwYXNz",
-			expectedStatus: http.StatusNoContent,
-			expectedBody:   "",
+			name: "X-Real-IP",
+			headers: map[string]string{
+				"X-Real-IP": "192.168.1.2",
+			},
+			expected: "192.168.1.2",
 		},
 		{
-			name:           "invalid JWT token",
-			authHeader:     "Bearer invalid.jwt.token",
-			expectedStatus: http.StatusNoContent,
-			expectedBody:   "",
+			name: "X-Client-IP",
+			headers: map[string]string{
+				"X-Client-IP": "192.168.1.3",
+			},
+			expected: "192.168.1.3",
+		},
+		{
+			name:       "RemoteAddr fallback",
+			remoteAddr: "192.168.1.4:12345",
+			expected:   "192.168.1.4",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("GET", "/test", nil)
-			if tt.authHeader != "" {
-				req.Header.Set("Authorization", tt.authHeader)
+			req := httptest.NewRequest("GET", "/", nil)
+
+			for key, value := range tt.headers {
+				req.Header.Set(key, value)
 			}
 
-			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
-
-			if w.Code != tt.expectedStatus {
-				t.Errorf("Expected status %d, got %d", tt.expectedStatus, w.Code)
+			if tt.remoteAddr != "" {
+				req.RemoteAddr = tt.remoteAddr
 			}
 
-			if w.Body.String() != tt.expectedBody {
-				t.Errorf("Expected body '%s', got '%s'", tt.expectedBody, w.Body.String())
+			result := getClientIP(req)
+			if result != tt.expected {
+				t.Errorf("Expected %s, got %s", tt.expected, result)
 			}
 		})
 	}
 }
 
-func TestJWTRequestEnricherWithValidToken(t *testing.T) {
-	base := NewBase("TestService", "1.0.0", "test-build", true)
-	router := chi.NewRouter()
+func TestGetTokenFromRequest(t *testing.T) {
+	tests := []struct {
+		name       string
+		authHeader string
+		expected   string
+	}{
+		{
+			name:       "Valid Bearer token",
+			authHeader: "Bearer test-token-123",
+			expected:   "test-token-123",
+		},
+		{
+			name:       "Valid Bearer token with spaces",
+			authHeader: "Bearer   test-token-456   ",
+			expected:   "test-token-456",
+		},
+		{
+			name:       "Invalid format - no space",
+			authHeader: "Bearertest-token",
+			expected:   "",
+		},
+		{
+			name:       "Invalid format - wrong scheme",
+			authHeader: "Basic dGVzdDp0ZXN0",
+			expected:   "",
+		},
+		{
+			name:       "Empty header",
+			authHeader: "",
+			expected:   "",
+		},
+	}
 
-	// Add JWT enricher middleware
-	router.Use(base.JWTRequestEnricher("user_id", "sub"))
-
-	// Add a test endpoint that checks for enriched context
-	router.Get("/test", func(w http.ResponseWriter, r *http.Request) {
-		userID := r.Context().Value("user_id")
-		if userID != nil {
-			w.WriteHeader(http.StatusOK)
-			if _, err := w.Write([]byte(userID.(string))); err != nil {
-				t.Errorf("Failed to write response: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/", nil)
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
 			}
-		} else {
-			w.WriteHeader(http.StatusNoContent)
-		}
-	})
 
-	// Create a valid JWT token with a "sub" claim
-	// This is a test token with payload: {"sub": "test-user-123"}
-	// nolint:gosec // This is a test token, not a real credential
-	validToken := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0LXVzZXItMTIzIn0.signature"
+			result := getTokenFromRequest(req)
+			if result != tt.expected {
+				t.Errorf("Expected %s, got %s", tt.expected, result)
+			}
+		})
+	}
+}
 
-	req := httptest.NewRequest("GET", "/test", nil)
-	req.Header.Set("Authorization", "Bearer "+validToken)
+func TestMaskToken(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{
+			input:    "abcdefghijklmnop",
+			expected: "abcd...mnop",
+		},
+		{
+			input:    "short",
+			expected: "***",
+		},
+		{
+			input:    "12345678",
+			expected: "***",
+		},
+		{
+			input:    "",
+			expected: "***",
+		},
+	}
 
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := maskToken(tt.input)
+			if result != tt.expected {
+				t.Errorf("Expected %s, got %s", tt.expected, result)
+			}
+		})
+	}
+}
 
-	// Note: This test will likely fail because the JWT signature validation will fail
-	// In a real scenario, you'd use a properly signed JWT token
-	// This test demonstrates the structure but may not pass with signature validation
-	if w.Code != http.StatusNoContent {
-		t.Logf("Expected status 204 (due to JWT validation failure), got %d", w.Code)
+func TestDefaultRateLimiterConfig(t *testing.T) {
+	config := DefaultRateLimiterConfig()
+
+	if config.RequestsPerSecond != 10.0 {
+		t.Errorf("Expected 10.0 requests per second, got %f", config.RequestsPerSecond)
+	}
+
+	if config.Burst != 20 {
+		t.Errorf("Expected burst of 20, got %d", config.Burst)
+	}
+
+	if config.Window != time.Minute {
+		t.Errorf("Expected window of 1 minute, got %v", config.Window)
+	}
+}
+
+func TestRateLimiterCleanup(t *testing.T) {
+	config := &RateLimiterConfig{
+		RequestsPerSecond: 10.0,
+		Burst:             20,
+		Window:            1 * time.Minute,
+	}
+
+	limiter := newRateLimiter(config)
+
+	// Add some limiters
+	limiter.getLimiter("ip1")
+	limiter.getLimiter("ip2")
+	limiter.getLimiter("ip3")
+
+	if len(limiter.limiters) != 3 {
+		t.Errorf("Expected 3 limiters, got %d", len(limiter.limiters))
+	}
+
+	// Test cleanup (should not trigger since we have < 1000 limiters)
+	limiter.cleanup()
+
+	if len(limiter.limiters) != 3 {
+		t.Errorf("Expected 3 limiters after cleanup, got %d", len(limiter.limiters))
 	}
 }
