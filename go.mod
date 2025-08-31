@@ -11,6 +11,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/m8as/go-chi-metrics v0.0.4
 	github.com/prometheus/client_golang v1.23.0
+	golang.org/x/time v0.12.0
 )
 
 require (
@@ -22,7 +23,6 @@ require (
 	github.com/prometheus/common v0.65.0 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	golang.org/x/sys v0.33.0 // indirect
-	golang.org/x/time v0.12.0 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
 	howett.net/plist v0.0.0-20181124034731-591f970eefbb // indirect
 )
