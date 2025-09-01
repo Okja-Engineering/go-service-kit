@@ -71,6 +71,7 @@ This repository is intended as a minimal framework and starter kit for building 
 
 - [API](pkg/api/README.md) - HTTP endpoints, middleware, rate limiting
 - [Auth](pkg/auth/README.md) - JWT authentication and validation
+- [Crypto](pkg/crypto/README.md) - Password hashing, token generation, and validation
 - [Env](pkg/env/README.md) - Environment variable helpers
 - [Logging](pkg/logging/README.md) - Structured logging utilities
 - [Problem](pkg/problem/README.md) - RFC-7807 Problem+JSON responses

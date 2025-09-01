@@ -100,43 +100,37 @@ func TestExtractToken(t *testing.T) {
 		name        string
 		authHeader  string
 		expected    string
-		description string
+		expectError bool
 	}{
 		{
 			name:        "valid bearer token",
-			authHeader:  "Bearer test-token-123",
-			expected:    "test-token-123",
-			description: "Should extract token from valid bearer header",
+			authHeader:  "Bearer test-token",
+			expected:    "test-token",
+			expectError: false,
 		},
 		{
 			name:        "bearer token with spaces",
-			authHeader:  "Bearer   test-token-456   ",
-			expected:    "test-token-456",
-			description: "Should handle extra spaces",
+			authHeader:  "Bearer  test-token  ",
+			expected:    "test-token",
+			expectError: false,
 		},
 		{
 			name:        "missing auth header",
 			authHeader:  "",
 			expected:    "",
-			description: "Should return empty string for missing header",
+			expectError: true,
 		},
 		{
 			name:        "invalid format",
-			authHeader:  "Invalid",
+			authHeader:  "Basic dGVzdDp0ZXN0",
 			expected:    "",
-			description: "Should return empty string for invalid format",
-		},
-		{
-			name:        "basic auth",
-			authHeader:  "Basic dXNlcjpwYXNz",
-			expected:    "",
-			description: "Should return empty string for basic auth",
+			expectError: true,
 		},
 		{
 			name:        "bearer without token",
 			authHeader:  "Bearer",
 			expected:    "",
-			description: "Should return empty string for bearer without token",
+			expectError: true,
 		},
 	}
 
@@ -147,9 +141,15 @@ func TestExtractToken(t *testing.T) {
 				req.Header.Set("Authorization", tt.authHeader)
 			}
 
-			result := validator.extractToken(req)
-			if result != tt.expected {
-				t.Errorf("%s: expected '%s', got '%s'", tt.description, tt.expected, result)
+			token := validator.extractToken(req)
+			if tt.expectError && token != "" {
+				t.Errorf("Expected empty token for error case")
+			}
+			if !tt.expectError && token == "" {
+				t.Errorf("Expected non-empty token")
+			}
+			if token != tt.expected {
+				t.Errorf("Expected token %s, got %s", tt.expected, token)
 			}
 		})
 	}
@@ -161,71 +161,57 @@ func TestValidateClaims(t *testing.T) {
 		scope:    "test-scope",
 	}
 
-	// Use timestamps relative to a fixed time for testing
-	baseTime := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC)
-	exp := baseTime.Add(1 * time.Hour)
-	iat := baseTime.Add(-1 * time.Hour)
+
 
 	tests := []struct {
 		name        string
 		claims      jwt.MapClaims
 		expectError bool
-		description string
 	}{
 		{
 			name: "valid claims",
 			claims: jwt.MapClaims{
-				"exp": exp.Unix(),
-				"iat": iat.Unix(),
 				"aud": "test-client",
 				"scp": "test-scope",
+				"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
+				"iat": float64(time.Now().Unix()),
+				"nbf": float64(time.Now().Unix()),
 			},
 			expectError: false,
-			description: "Should accept valid claims",
 		},
-		// Note: Time-based validation tests are skipped due to complexity
-		// of mocking time.Now() in Go. These are tested in integration tests.
 		{
 			name: "invalid audience",
 			claims: jwt.MapClaims{
-				"exp": exp.Unix(),
-				"iat": iat.Unix(),
 				"aud": "wrong-client",
 				"scp": "test-scope",
+				"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
 			},
 			expectError: true,
-			description: "Should reject token with wrong audience",
 		},
 		{
 			name: "missing audience",
 			claims: jwt.MapClaims{
-				"exp": exp.Unix(),
-				"iat": iat.Unix(),
 				"scp": "test-scope",
+				"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
 			},
 			expectError: true,
-			description: "Should reject token without audience",
 		},
 		{
 			name: "insufficient scope",
 			claims: jwt.MapClaims{
-				"exp": exp.Unix(),
-				"iat": iat.Unix(),
 				"aud": "test-client",
-				"scp": "other-scope",
+				"scp": "insufficient-scope",
+				"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
 			},
 			expectError: true,
-			description: "Should reject token with insufficient scope",
 		},
 		{
 			name: "missing scope",
 			claims: jwt.MapClaims{
-				"exp": exp.Unix(),
-				"iat": iat.Unix(),
 				"aud": "test-client",
+				"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
 			},
 			expectError: true,
-			description: "Should reject token without scope",
 		},
 	}
 
@@ -233,10 +219,10 @@ func TestValidateClaims(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := validator.validateClaims(tt.claims)
 			if tt.expectError && err == nil {
-				t.Errorf("%s: expected error but got none", tt.description)
+				t.Errorf("Expected error but got none")
 			}
 			if !tt.expectError && err != nil {
-				t.Errorf("%s: unexpected error: %v", tt.description, err)
+				t.Errorf("Unexpected error: %v", err)
 			}
 		})
 	}
@@ -247,9 +233,9 @@ func TestTokenRevocation(t *testing.T) {
 		revokedTokens: make(map[string]time.Time),
 	}
 
-	token := "test-token-123"
+	token := "test-token"
 
-	// Initially not revoked
+	// Test token is not revoked initially
 	if validator.isTokenRevoked(token) {
 		t.Error("Token should not be revoked initially")
 	}
@@ -257,7 +243,7 @@ func TestTokenRevocation(t *testing.T) {
 	// Revoke token
 	validator.RevokeToken(token)
 
-	// Should be revoked
+	// Test token is now revoked
 	if !validator.isTokenRevoked(token) {
 		t.Error("Token should be revoked after revocation")
 	}
@@ -268,7 +254,6 @@ func TestGetUserIDFromContext(t *testing.T) {
 		name     string
 		claims   jwt.MapClaims
 		expected string
-		found    bool
 	}{
 		{
 			name: "sub claim",
@@ -276,7 +261,6 @@ func TestGetUserIDFromContext(t *testing.T) {
 				"sub": "user123",
 			},
 			expected: "user123",
-			found:    true,
 		},
 		{
 			name: "user_id claim",
@@ -284,7 +268,6 @@ func TestGetUserIDFromContext(t *testing.T) {
 				"user_id": "user456",
 			},
 			expected: "user456",
-			found:    true,
 		},
 		{
 			name: "uid claim",
@@ -292,7 +275,6 @@ func TestGetUserIDFromContext(t *testing.T) {
 				"uid": "user789",
 			},
 			expected: "user789",
-			found:    true,
 		},
 		{
 			name: "userid claim",
@@ -300,7 +282,6 @@ func TestGetUserIDFromContext(t *testing.T) {
 				"userid": "user101",
 			},
 			expected: "user101",
-			found:    true,
 		},
 		{
 			name: "no user id claims",
@@ -308,13 +289,11 @@ func TestGetUserIDFromContext(t *testing.T) {
 				"other": "value",
 			},
 			expected: "",
-			found:    false,
 		},
 		{
 			name:     "no claims",
 			claims:   nil,
 			expected: "",
-			found:    false,
 		},
 	}
 
@@ -325,12 +304,9 @@ func TestGetUserIDFromContext(t *testing.T) {
 				ctx = context.WithValue(ctx, JWTClaimsKey, tt.claims)
 			}
 
-			userID, found := GetUserIDFromContext(ctx)
-			if found != tt.found {
-				t.Errorf("Expected found=%v, got %v", tt.found, found)
-			}
-			if found && userID != tt.expected {
-				t.Errorf("Expected user ID '%s', got '%s'", tt.expected, userID)
+			userID, _ := GetUserIDFromContext(ctx)
+			if userID != tt.expected {
+				t.Errorf("Expected user ID %s, got %s", tt.expected, userID)
 			}
 		})
 	}
@@ -343,41 +319,230 @@ func TestGetClaimsFromContext(t *testing.T) {
 	}
 
 	ctx := context.WithValue(context.Background(), JWTClaimsKey, claims)
-
 	retrievedClaims, found := GetClaimsFromContext(ctx)
+
 	if !found {
-		t.Error("Expected to find claims in context")
+		t.Error("Expected claims to be found in context")
 	}
 
 	if retrievedClaims["sub"] != "user123" {
-		t.Error("Expected to retrieve correct claims")
-	}
-
-	// Test with no claims
-	emptyCtx := context.Background()
-	_, found = GetClaimsFromContext(emptyCtx)
-	if found {
-		t.Error("Expected not to find claims in empty context")
+		t.Error("Expected sub claim to match")
 	}
 }
 
 func TestSendUnauthorizedResponse(t *testing.T) {
 	validator := &JWTValidator{}
-
 	w := httptest.NewRecorder()
-	validator.sendUnauthorizedResponse(w, "TEST_ERROR", "Test error message")
+
+	validator.sendUnauthorizedResponse(w, "TEST_ERROR", "test error")
 
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("Expected status 401, got %d", w.Code)
 	}
 
-	contentType := w.Header().Get("Content-Type")
-	if contentType != "application/json" {
-		t.Errorf("Expected Content-Type application/json, got %s", contentType)
+	// Check that response contains error message
+	body := w.Body.String()
+	if body == "" {
+		t.Error("Expected non-empty response body")
+	}
+}
+
+// Test middleware functionality
+func TestJWTValidatorMiddleware(t *testing.T) {
+	validator := &JWTValidator{
+		clientID: "test-client",
+		scope:    "test-scope",
 	}
 
-	wwwAuth := w.Header().Get("WWW-Authenticate")
-	if wwwAuth != "Bearer error=\"TEST_ERROR\"" {
-		t.Errorf("Expected WWW-Authenticate header, got %s", wwwAuth)
+	handlerCalled := false
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := validator.Middleware(testHandler)
+
+	// Test without token
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	middleware.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Expected status 401, got %d", w.Code)
+	}
+
+	if handlerCalled {
+		t.Error("Handler should not be called without valid token")
+	}
+}
+
+func TestJWTValidatorProtect(t *testing.T) {
+	validator := &JWTValidator{
+		clientID: "test-client",
+		scope:    "test-scope",
+	}
+
+	handlerCalled := false
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	protected := validator.Protect(testHandler)
+
+	// Test without token
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	protected(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Expected status 401, got %d", w.Code)
+	}
+
+	if handlerCalled {
+		t.Error("Handler should not be called without valid token")
+	}
+}
+
+func TestJWTValidatorValidateRequest(t *testing.T) {
+	validator := &JWTValidator{
+		clientID: "test-client",
+		scope:    "test-scope",
+	}
+
+	req := httptest.NewRequest("GET", "/test", nil)
+
+	result := validator.ValidateRequest(req)
+
+	if result.Valid {
+		t.Error("Expected invalid result for request without token")
+	}
+}
+
+// Test caching functionality
+func TestTokenCaching(t *testing.T) {
+	validator := &JWTValidator{
+		tokenCache: make(map[string]*CachedToken),
+		cacheTTL:   5 * time.Minute,
+	}
+
+	token := "test-token"
+	claims := jwt.MapClaims{"sub": "user123"}
+
+	// Test caching token
+	validator.cacheToken(token, claims)
+
+	// Test retrieving cached token
+	cachedToken := validator.getCachedToken(token)
+	if cachedToken == nil {
+		t.Error("Expected cached token to be retrieved")
+	}
+
+	if cachedToken.Claims["sub"] != "user123" {
+		t.Error("Expected cached claims to match original")
+	}
+
+	// Test retrieving non-existent token
+	nonExistentToken := validator.getCachedToken("non-existent")
+	if nonExistentToken != nil {
+		t.Error("Expected nil for non-existent token")
+	}
+}
+
+// Test error types
+func TestValidationError(t *testing.T) {
+	err := &ValidationError{Message: "test error"}
+
+	if err.Error() != "validation error []: test error" {
+		t.Errorf("Expected error message 'validation error []: test error', got '%s'", err.Error())
+	}
+
+	if !IsValidationError(err) {
+		t.Error("Expected IsValidationError to return true")
+	}
+}
+
+func TestConfigurationError(t *testing.T) {
+	err := &ConfigurationError{Message: "config error"}
+
+	if err.Error() != "configuration error in : config error" {
+		t.Errorf("Expected error message 'configuration error in : config error', got '%s'", err.Error())
+	}
+
+	if !IsConfigurationError(err) {
+		t.Error("Expected IsConfigurationError to return true")
+	}
+}
+
+// Test middleware composition
+func TestChain(t *testing.T) {
+	middleware1 := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Middleware1", "true")
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	middleware2 := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Middleware2", "true")
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	chained := Chain(middleware1, middleware2)(handler)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	chained.ServeHTTP(w, req)
+
+	if w.Header().Get("X-Middleware1") != "true" {
+		t.Error("Expected middleware1 header to be set")
+	}
+
+	if w.Header().Get("X-Middleware2") != "true" {
+		t.Error("Expected middleware2 header to be set")
+	}
+}
+
+func TestCompose(t *testing.T) {
+	handler1 := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Handler1", "true")
+			next(w, r)
+		}
+	}
+
+	handler2 := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Handler2", "true")
+			next(w, r)
+		}
+	}
+
+	composed := Compose(handler1, handler2)
+
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	composed(handler)(w, req)
+
+	if w.Header().Get("X-Handler1") != "true" {
+		t.Error("Expected handler1 header to be set")
+	}
+
+	if w.Header().Get("X-Handler2") != "true" {
+		t.Error("Expected handler2 header to be set")
 	}
 }

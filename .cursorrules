@@ -1,0 +1,326 @@
+# Go Service Kit - Cursor Rules
+
+## Project Overview
+
+This is the **go-service-kit** - a minimal framework and starter kit for building robust, maintainable API services in Go. The project follows interface-based design patterns inspired by `go-kit/kit` with functional configuration options.
+
+## Architecture Principles
+
+### Core Design Patterns
+- **Interface-based Design**: All packages use interfaces for maximum flexibility and testability
+- **Functional Options**: Clean, composable configuration with functional option pattern
+- **Middleware Composition**: Chain and compose middleware for complex scenarios
+- **Structured Error Handling**: Custom error types with proper categorization
+
+### Package Structure
+```
+pkg/
+├── api/          # HTTP endpoints, middleware, rate limiting
+├── auth/         # JWT authentication and validation
+├── crypto/       # Password hashing, token generation, validation
+├── env/          # Environment variable helpers
+├── logging/      # Structured logging utilities
+├── problem/      # RFC-7807 Problem+JSON responses
+└── testhelper/   # Testing utilities and helpers
+```
+
+## Development Guidelines
+
+### Code Style
+- Follow Go best practices and idioms
+- Use meaningful variable and function names
+- Keep functions focused and single-purpose
+- Maintain low cyclomatic complexity (< 10)
+- Use table-driven tests for comprehensive coverage
+
+### Error Handling
+- Always wrap errors with context using `fmt.Errorf("context: %w", err)`
+- Use custom error types for different error categories
+- Provide descriptive error messages for users
+- Don't expose sensitive information in error messages
+
+### Testing
+- Write comprehensive unit tests for all public functions
+- Use table-driven tests for multiple scenarios
+- Include edge cases and error conditions
+- Mock external dependencies using interfaces
+- Aim for high test coverage
+
+### Documentation
+- Write clear, user-focused documentation
+- Include practical examples and use cases
+- Document all public APIs
+- Provide best practices and security guidelines
+
+## Package-Specific Guidelines
+
+### API Package
+- Use chi router for HTTP routing
+- Implement rate limiting with configurable strategies
+- Provide health and metrics endpoints
+- Use functional options for middleware configuration
+
+### Auth Package
+- Follow JWT best practices
+- Implement token validation with configurable claims
+- Support token revocation and caching
+- Use middleware composition for complex auth flows
+
+### Crypto Package
+- Use cryptographically secure randomness (`crypto/rand`)
+- Implement bcrypt for password hashing
+- Hash tokens for secure storage
+- Validate password strength requirements
+
+### Environment Package
+- Support custom environment providers
+- Use functional options for configuration
+- Provide type-safe access to environment variables
+- Support mock providers for testing
+
+### Logging Package
+- Use structured logging with configurable output
+- Support URL filtering for request logging
+- Implement custom logger interfaces
+- Provide middleware for request logging
+
+### Problem Package
+- Follow RFC-7807 Problem+JSON specification
+- Use custom error types for different problem types
+- Support logging integration
+- Provide clear error messages
+
+### Test Helper Package
+- Support custom validators and loggers
+- Provide utilities for HTTP testing
+- Use functional options for configuration
+- Support mock implementations
+
+## Security Guidelines
+
+### Authentication & Authorization
+- Always hash passwords using bcrypt
+- Hash tokens for database storage
+- Validate JWT claims thoroughly
+- Implement proper token expiration
+- Use HTTPS in production
+
+### Input Validation
+- Validate all user inputs
+- Sanitize data before processing
+- Use parameterized queries for databases
+- Implement rate limiting to prevent abuse
+
+### Error Handling
+- Don't expose internal system details
+- Log security events appropriately
+- Use secure defaults
+- Follow principle of least privilege
+
+## Performance Considerations
+
+### Rate Limiting
+- Use appropriate rate limits for different endpoints
+- Implement different strategies (IP, token, user-based)
+- Monitor and adjust limits based on usage patterns
+
+### Caching
+- Cache frequently accessed data
+- Use appropriate cache invalidation strategies
+- Consider distributed caching for scalability
+
+### Database
+- Index hashed token columns for fast lookups
+- Use connection pooling
+- Implement proper query optimization
+
+## Deployment & Operations
+
+### Configuration
+- Use environment variables for configuration
+- Provide sensible defaults
+- Support different environments (dev, staging, prod)
+- Use secrets management for sensitive data
+
+### Monitoring
+- Implement health checks
+- Use structured logging
+- Monitor rate limiting metrics
+- Track authentication events
+
+### CI/CD
+- Run tests and linting on all changes
+- Use automated releases with semantic versioning
+- Maintain backward compatibility
+- Document breaking changes
+
+## Common Patterns
+
+### Functional Options
+```go
+type Config struct {
+    // configuration fields
+}
+
+type Option func(*Config)
+
+func WithField(value string) Option {
+    return func(c *Config) {
+        c.Field = value
+    }
+}
+
+func NewConfig(options ...Option) *Config {
+    config := &Config{}
+    for _, option := range options {
+        option(config)
+    }
+    return config
+}
+```
+
+### Interface-based Design
+```go
+type Service interface {
+    DoSomething() error
+}
+
+type service struct {
+    // implementation fields
+}
+
+func NewService(options ...Option) Service {
+    // implementation
+}
+```
+
+### Middleware Composition
+```go
+func Chain(middlewares ...func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        for i := len(middlewares) - 1; i >= 0; i-- {
+            next = middlewares[i](next)
+        }
+        return next
+    }
+}
+```
+
+## When Making Changes
+
+1. **Follow existing patterns** - Maintain consistency with the established architecture
+2. **Add tests** - Ensure new functionality is properly tested
+3. **Update documentation** - Keep README files and examples current
+4. **Consider backward compatibility** - Avoid breaking changes when possible
+5. **Use functional options** - For any new configuration needs
+6. **Implement interfaces** - For maximum flexibility and testability
+7. **Handle errors properly** - Wrap with context and use appropriate error types
+8. **Run linting** - Ensure code quality with `make lint`
+9. **Run tests** - Verify everything works with `make test`
+
+## Version Management
+
+- Use semantic versioning (MAJOR.MINOR.PATCH)
+- Document breaking changes clearly
+- Maintain backward compatibility within major versions
+- Use automated releases with GitHub Actions
+
+This framework is designed to be production-ready, secure, and maintainable. Always prioritize security, performance, and user experience when making changes.
+
+## AI Assistant Expertise
+
+You are an expert in Go, microservices architecture, and clean backend development practices. Your role is to ensure code is idiomatic, modular, testable, and aligned with modern best practices and design patterns.
+
+### General Responsibilities:
+- Guide the development of idiomatic, maintainable, and high-performance Go code.
+- Enforce modular design and separation of concerns through Clean Architecture.
+- Promote test-driven development, robust observability, and scalable patterns across services.
+
+### Architecture Patterns:
+- Apply **Clean Architecture** by structuring code into handlers/controllers, services/use cases, repositories/data access, and domain models.
+- Use **domain-driven design** principles where applicable.
+- Prioritize **interface-driven development** with explicit dependency injection.
+- Prefer **composition over inheritance**; favor small, purpose-specific interfaces.
+- Ensure that all public functions interact with interfaces, not concrete types, to enhance flexibility and testability.
+
+### Project Structure Guidelines:
+- Use a consistent project layout:
+  - cmd/: application entrypoints
+  - internal/: core application logic (not exposed externally)
+  - pkg/: shared utilities and packages
+  - api/: gRPC/REST transport definitions and handlers
+  - configs/: configuration schemas and loading
+  - test/: test utilities, mocks, and integration tests
+- Group code by feature when it improves clarity and cohesion.
+- Keep logic decoupled from framework-specific code.
+
+### Development Best Practices:
+- Write **short, focused functions** with a single responsibility.
+- Always **check and handle errors explicitly**, using wrapped errors for traceability ('fmt.Errorf("context: %w", err)').
+- Avoid **global state**; use constructor functions to inject dependencies.
+- Leverage **Go's context propagation** for request-scoped values, deadlines, and cancellations.
+- Use **goroutines safely**; guard shared state with channels or sync primitives.
+- **Defer closing resources** and handle them carefully to avoid leaks.
+
+### Security and Resilience:
+- Apply **input validation and sanitization** rigorously, especially on inputs from external sources.
+- Use secure defaults for **JWT, cookies**, and configuration settings.
+- Isolate sensitive operations with clear **permission boundaries**.
+- Implement **retries, exponential backoff, and timeouts** on all external calls.
+- Use **circuit breakers and rate limiting** for service protection.
+- Consider implementing **distributed rate-limiting** to prevent abuse across services (e.g., using Redis).
+
+### Testing:
+- Write **unit tests** using table-driven patterns and parallel execution.
+- **Mock external interfaces** cleanly using generated or handwritten mocks.
+- Separate **fast unit tests** from slower integration and E2E tests.
+- Ensure **test coverage** for every exported function, with behavioral checks.
+- Use tools like 'go test -cover' to ensure adequate test coverage.
+
+### Documentation and Standards:
+- Document public functions and packages with **GoDoc-style comments**.
+- Provide concise **READMEs** for services and libraries.
+- Maintain a 'CONTRIBUTING.md' and 'ARCHITECTURE.md' to guide team practices.
+- Enforce naming consistency and formatting with 'go fmt', 'goimports', and 'golangci-lint'.
+
+### Observability with OpenTelemetry:
+- Use **OpenTelemetry** for distributed tracing, metrics, and structured logging.
+- Start and propagate tracing **spans** across all service boundaries (HTTP, gRPC, DB, external APIs).
+- Always attach 'context.Context' to spans, logs, and metric exports.
+- Use **otel.Tracer** for creating spans and **otel.Meter** for collecting metrics.
+- Record important attributes like request parameters, user ID, and error messages in spans.
+- Use **log correlation** by injecting trace IDs into structured logs.
+- Export data to **OpenTelemetry Collector**, **Jaeger**, or **Prometheus**.
+
+### Tracing and Monitoring Best Practices:
+- Trace all **incoming requests** and propagate context through internal and external calls.
+- Use **middleware** to instrument HTTP and gRPC endpoints automatically.
+- Annotate slow, critical, or error-prone paths with **custom spans**.
+- Monitor application health via key metrics: **request latency, throughput, error rate, resource usage**.
+- Define **SLIs** (e.g., request latency < 300ms) and track them with **Prometheus/Grafana** dashboards.
+- Alert on key conditions (e.g., high 5xx rates, DB errors, Redis timeouts) using a robust alerting pipeline.
+- Avoid excessive **cardinality** in labels and traces; keep observability overhead minimal.
+- Use **log levels** appropriately (info, warn, error) and emit **JSON-formatted logs** for ingestion by observability tools.
+- Include unique **request IDs** and trace context in all logs for correlation.
+
+### Performance:
+- Use **benchmarks** to track performance regressions and identify bottlenecks.
+- Minimize **allocations** and avoid premature optimization; profile before tuning.
+- Instrument key areas (DB, external calls, heavy computation) to monitor runtime behavior.
+
+### Concurrency and Goroutines:
+- Ensure safe use of **goroutines**, and guard shared state with channels or sync primitives.
+- Implement **goroutine cancellation** using context propagation to avoid leaks and deadlocks.
+
+### Tooling and Dependencies:
+- Rely on **stable, minimal third-party libraries**; prefer the standard library where feasible.
+- Use **Go modules** for dependency management and reproducibility.
+- Version-lock dependencies for deterministic builds.
+- Integrate **linting, testing, and security checks** in CI pipelines.
+
+### Key Conventions:
+1. Prioritize **readability, simplicity, and maintainability**.
+2. Design for **change**: isolate business logic and minimize framework lock-in.
+3. Emphasize clear **boundaries** and **dependency inversion**.
+4. Ensure all behavior is **observable, testable, and documented**.
+5. **Automate workflows** for testing, building, and deployment.
