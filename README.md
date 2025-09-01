@@ -60,6 +60,8 @@ make lint   # Lint the codebase
 pkg/
 ├── api        # API helpers and endpoints ([docs](pkg/api/README.md))
 ├── auth       # JWT and auth middleware ([docs](pkg/auth/README.md))
+├── crypto     # Password hashing and token management ([docs](pkg/crypto/README.md))
+├── database   # PostgreSQL connection management ([docs](pkg/database/README.md))
 ├── env        # Environment variable helpers ([docs](pkg/env/README.md))
 ├── logging    # Logging utilities ([docs](pkg/logging/README.md))
 ├── problem    # Problem+JSON error responses ([docs](pkg/problem/README.md))
@@ -72,6 +74,7 @@ This repository is intended as a minimal framework and starter kit for building 
 - [API](pkg/api/README.md) - HTTP endpoints, middleware, rate limiting
 - [Auth](pkg/auth/README.md) - JWT authentication and validation
 - [Crypto](pkg/crypto/README.md) - Password hashing, token generation, and validation
+- [Database](pkg/database/README.md) - PostgreSQL connection management and migrations
 - [Env](pkg/env/README.md) - Environment variable helpers
 - [Logging](pkg/logging/README.md) - Structured logging utilities
 - [Problem](pkg/problem/README.md) - RFC-7807 Problem+JSON responses
@@ -81,18 +84,35 @@ This repository is intended as a minimal framework and starter kit for building 
 package main
 
 import (
+    "log"
     "net/http"
     
     "github.com/go-chi/chi/v5"
     "github.com/go-chi/chi/v5/middleware"
     
     "github.com/Okja-Engineering/go-service-kit/pkg/api"
+    "github.com/Okja-Engineering/go-service-kit/pkg/auth"
+    "github.com/Okja-Engineering/go-service-kit/pkg/database"
     "github.com/Okja-Engineering/go-service-kit/pkg/env"
 )
 
 func main() {
     // Load configuration
     port := env.GetString("PORT", "8080")
+    
+    // Setup database
+    db := database.NewPostgreSQLWithOptions(
+        database.WithHost(env.GetString("DB_HOST", "localhost")),
+        database.WithPort(env.GetInt("DB_PORT", 5432)),
+        database.WithUser(env.GetString("DB_USER", "postgres")),
+        database.WithPassword(env.GetString("DB_PASSWORD", "")),
+        database.WithDatabase(env.GetString("DB_NAME", "myapp")),
+    )
+    
+    if err := db.Connect(); err != nil {
+        log.Fatalf("Failed to connect to database: %v", err)
+    }
+    defer db.Close()
     
     // Setup router with middleware
     r := chi.NewRouter()
@@ -102,6 +122,15 @@ func main() {
     // Add health and metrics endpoints
     api.AddHealthEndpoints(r)
     api.AddMetricsEndpoints(r)
+    
+    // Add database health check
+    r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+        if err := db.HealthCheck(); err != nil {
+            api.ReturnErrorJSON(w, "Database unhealthy", http.StatusServiceUnavailable)
+            return
+        }
+        api.ReturnOKJSON(w, "Service healthy")
+    })
     
     // Start server
     log.Printf("Server starting on port %s", port)

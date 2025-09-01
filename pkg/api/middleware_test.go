@@ -128,7 +128,9 @@ func TestRateLimitByUserID(t *testing.T) {
 
 	// Test with valid JWT containing user ID
 	req := httptest.NewRequest("GET", "/", nil)
-	req.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyMTIzIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c")
+	req.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."+
+		"eyJzdWIiOiJ1c2VyMTIzIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ."+
+		"SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c")
 	w := httptest.NewRecorder()
 
 	wrappedHandler.ServeHTTP(w, req)
@@ -520,8 +522,10 @@ func TestGetClaimFromJWT(t *testing.T) {
 			description: "Should return empty string for invalid token",
 		},
 		{
-			name:        "missing claim",
-			token:       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyMTIzIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+			name: "missing claim",
+			token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+				"eyJzdWIiOiJ1c2VyMTIzIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ." +
+				"SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
 			claim:       "missing",
 			expected:    "",
 			description: "Should return empty string for missing claim",
@@ -550,8 +554,10 @@ func TestGetUserIDFromJWT(t *testing.T) {
 		description string
 	}{
 		{
-			name:        "valid sub claim",
-			authHeader:  "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyMTIzIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+			name: "valid sub claim",
+			authHeader: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+				"eyJzdWIiOiJ1c2VyMTIzIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ." +
+				"SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
 			expected:    "user123",
 			description: "Should extract user ID from sub claim",
 		},

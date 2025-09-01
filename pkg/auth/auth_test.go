@@ -161,8 +161,6 @@ func TestValidateClaims(t *testing.T) {
 		scope:    "test-scope",
 	}
 
-
-
 	tests := []struct {
 		name        string
 		claims      jwt.MapClaims
@@ -438,6 +436,7 @@ func TestTokenCaching(t *testing.T) {
 	cachedToken := validator.getCachedToken(token)
 	if cachedToken == nil {
 		t.Error("Expected cached token to be retrieved")
+		return
 	}
 
 	if cachedToken.Claims["sub"] != "user123" {
