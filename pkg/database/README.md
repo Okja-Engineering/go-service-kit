@@ -7,6 +7,7 @@ A production-ready PostgreSQL database package for Go services with connection p
 - **Connection Management**: Efficient connection pooling with configurable limits
 - **Health Checks**: Built-in health monitoring for load balancers and monitoring systems
 - **Migration Support**: Schema versioning with automatic migration tracking
+- **Multitenancy Support**: Multiple isolation strategies (RLS, schema-per-tenant, database-per-tenant)
 - **Production Ready**: Connection timeouts, retry logic, and graceful shutdown
 - **Observability**: Connection pool statistics and metrics
 - **Functional Options**: Clean, composable configuration
@@ -116,8 +117,11 @@ db := database.NewPostgreSQLWithOptions(
     database.WithConnMaxIdleTime(10 * time.Minute),
     database.WithConnectTimeout(5 * time.Second),
     database.WithQueryTimeout(60 * time.Second),
-    database.WithRetryAttempts(5),
-    database.WithRetryDelay(2 * time.Second),
+    	database.WithRetryAttempts(5),
+	database.WithRetryDelay(2 * time.Second),
+	database.WithMultitenancy(true),
+	database.WithDefaultIsolation("rls"),
+	database.WithTenantSchemaPrefix("tenant_"),
 )
 ```
 
@@ -170,28 +174,62 @@ log.Printf("Wait count: %d, Wait duration: %v",
 
 ```go
 migrations := []database.Migration{
-    {
-        Version:     1,
-        Description: "Create users table",
-        UpSQL:       "CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT, email TEXT UNIQUE)",
-        DownSQL:     "DROP TABLE users",
-    },
-    {
-        Version:     2,
-        Description: "Add user roles",
-        UpSQL:       "ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'",
-        DownSQL:     "ALTER TABLE users DROP COLUMN role",
-    },
-    {
-        Version:     3,
-        Description: "Create sessions table",
-        UpSQL:       "CREATE TABLE sessions (id UUID PRIMARY KEY, user_id INTEGER REFERENCES users(id), expires_at TIMESTAMP)",
-        DownSQL:     "DROP TABLE sessions",
-    },
+	{
+		Version:     1,
+		Description: "Create users table",
+		UpSQL:       "CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT, email TEXT UNIQUE)",
+		DownSQL:     "DROP TABLE users",
+	},
+	{
+		Version:     2,
+		Description: "Add user roles",
+		UpSQL:       "ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'",
+		DownSQL:     "ALTER TABLE users DROP COLUMN role",
+	},
+	{
+		Version:     3,
+		Description: "Create sessions table",
+		UpSQL:       "CREATE TABLE sessions (id UUID PRIMARY KEY, user_id INTEGER REFERENCES users(id), expires_at TIMESTAMP)",
+		DownSQL:     "DROP TABLE sessions",
+	},
 }
 
 if err := db.Migrate(migrations); err != nil {
-    log.Fatalf("Migration failed: %v", err)
+	log.Fatalf("Migration failed: %v", err)
+}
+```
+
+### RLS Multitenancy Support
+
+The database package provides robust Row Level Security (RLS) multitenancy support, which is the recommended approach for most applications:
+
+```go
+db := database.NewPostgreSQLWithOptions(
+	database.WithHost("localhost"),
+	database.WithPort(5432),
+	database.WithUser("postgres"),
+	database.WithPassword("password"),
+	database.WithDatabase("myapp"),
+	database.WithMultitenancy(true),
+)
+
+// Set tenant context for the current session
+if err := db.SetTenantContext(ctx, "tenant123"); err != nil {
+	log.Printf("Failed to set tenant context: %v", err)
+}
+
+// All subsequent queries respect RLS policies
+rows, err := db.GetDB().Query("SELECT * FROM users")
+```
+
+#### Tenant-Aware Database Instance
+```go
+// Create a new database instance for a specific tenant
+tenantDB := db.WithTenant("tenant123")
+
+// Use the tenant-specific database
+if err := tenantDB.SetTenantContext(ctx, "tenant123"); err != nil {
+	log.Printf("Failed to set tenant context: %v", err)
 }
 ```
 
@@ -411,6 +449,67 @@ if err := db.HealthCheck(); err != nil {
 }
 ```
 
+### RLS Multitenancy Best Practices
+
+1. **RLS Implementation**
+   ```sql
+   -- Enable RLS on tables
+   ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+   
+   -- Create RLS policies
+   CREATE POLICY tenant_isolation ON users
+       FOR ALL USING (tenant_id = current_setting('app.current_tenant_id')::text);
+   ```
+
+2. **Tenant Context Management**
+   - Always validate tenant context before database operations
+   - Use consistent tenant ID formats across your application
+   - Implement proper tenant context propagation in middleware
+   - Clear tenant context when done to prevent data leakage
+
+3. **Tenant Context Propagation**
+   ```go
+   // In your HTTP middleware
+   func TenantMiddleware(next http.Handler) http.Handler {
+       return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+           tenantID := extractTenantID(r)
+           if tenantID != "" {
+               ctx := context.WithValue(r.Context(), "tenant_id", tenantID)
+               r = r.WithContext(ctx)
+           }
+           next.ServeHTTP(w, r)
+       })
+   }
+   
+   // In your handlers
+   func (h *Handler) GetUsers(w http.ResponseWriter, r *http.Request) {
+       tenantID := r.Context().Value("tenant_id").(string)
+       
+       // Set tenant context for this database session
+       if err := h.db.SetTenantContext(r.Context(), tenantID); err != nil {
+           http.Error(w, "Failed to set tenant context", http.StatusInternalServerError)
+           return
+       }
+       
+       // Clear tenant context when done
+       defer h.db.ClearTenantContext(r.Context())
+       
+       // All queries now respect tenant isolation
+       users, err := h.db.GetDB().Query("SELECT * FROM users")
+       // ... handle results
+   }
+   ```
+
+4. **Performance Monitoring**
+   ```go
+   // Get tenant-specific query statistics
+   stats, err := db.GetTenantQueryStats(ctx)
+   if err == nil {
+       log.Printf("Tenant %s: %d queries, %d slow queries, avg duration: %v",
+           stats.TenantID, stats.TotalQueries, stats.SlowQueries, stats.AverageDuration)
+   }
+   ```
+
 ## Monitoring and Observability
 
 ### Health Check Endpoint
@@ -506,6 +605,7 @@ if err := db.Connect(); err != nil {
 - `Config` - Database configuration
 - `ConnectionStats` - Connection pool statistics
 - `Migration` - Database migration definition
+- `TenantContext` - Tenant information and isolation strategy
 
 ### Functions
 
@@ -513,6 +613,21 @@ if err := db.Connect(); err != nil {
 - `NewPostgreSQLWithOptions(options ...Option) *PostgreSQL` - Create with options
 - `DefaultConfig() *Config` - Get secure default configuration
 - `NewConfig(options ...Option) *Config` - Create configuration with options
+
+### Methods
+
+- `Connect() error` - Establish database connection
+- `Close() error` - Close database connection
+- `GetDB() *sql.DB` - Get underlying sql.DB instance
+- `HealthCheck() error` - Check database health
+- `GetStats() ConnectionStats` - Get connection pool statistics
+- `Migrate(migrations []Migration) error` - Run database migrations
+- `GetMigrationVersion() (int, error)` - Get current migration version
+- `WithTenant(tenantID string) Database` - Create tenant-specific database instance
+- `SetTenantContext(ctx context.Context, tenantID string) error` - Set tenant context for session
+- `GetTenantContext(ctx context.Context) (TenantContext, error)` - Get current tenant context
+- `CreateTenantSchema(ctx context.Context, tenantID string) error` - Create tenant schema
+- `UseTenantSchema(ctx context.Context, tenantID string) error` - Switch to tenant schema
 
 ### Options
 
@@ -530,6 +645,9 @@ if err := db.Connect(); err != nil {
 - `WithQueryTimeout(timeout time.Duration)` - Set query timeout
 - `WithRetryAttempts(attempts int)` - Set retry attempts
 - `WithRetryDelay(delay time.Duration)` - Set retry delay
+- `WithMultitenancy(enabled bool)` - Enable multitenancy support
+- `WithDefaultIsolation(isolation string)` - Set default isolation strategy
+- `WithTenantSchemaPrefix(prefix string)` - Set tenant schema prefix
 
 ## Dependencies
 

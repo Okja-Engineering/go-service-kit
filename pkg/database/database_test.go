@@ -1,7 +1,10 @@
 package database
 
 import (
+	"context"
 	"database/sql"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -27,6 +30,10 @@ func TestDefaultConfig(t *testing.T) {
 		{"QueryTimeout", config.QueryTimeout, 30 * time.Second},
 		{"RetryAttempts", config.RetryAttempts, 3},
 		{"RetryDelay", config.RetryDelay, 1 * time.Second},
+		{"RLSContextVarName", config.RLSContextVarName, "app.current_tenant_id"},
+		{"RLSContextTimeout", config.RLSContextTimeout, time.Hour},
+		{"TenantIDPattern", config.TenantIDPattern, `^[a-zA-Z0-9_-]{3,50}$`},
+		{"EnableQueryStats", config.EnableQueryStats, true},
 	}
 
 	for _, tc := range testCases {
@@ -61,6 +68,10 @@ func TestNewConfig(t *testing.T) {
 		WithQueryTimeout(60*time.Second),
 		WithRetryAttempts(5),
 		WithRetryDelay(2*time.Second),
+		WithRLSContextVarName("custom.tenant_id"),
+		WithRLSContextTimeout(2*time.Hour),
+		WithTenantIDPattern(`^[a-z]{3,10}$`),
+		WithQueryStats(false),
 	)
 
 	testCases := []struct {
@@ -82,6 +93,10 @@ func TestNewConfig(t *testing.T) {
 		{"QueryTimeout", config.QueryTimeout, 60 * time.Second},
 		{"RetryAttempts", config.RetryAttempts, 5},
 		{"RetryDelay", config.RetryDelay, 2 * time.Second},
+		{"RLSContextVarName", config.RLSContextVarName, "custom.tenant_id"},
+		{"RLSContextTimeout", config.RLSContextTimeout, 2 * time.Hour},
+		{"TenantIDPattern", config.TenantIDPattern, `^[a-z]{3,10}$`},
+		{"EnableQueryStats", config.EnableQueryStats, false},
 	}
 
 	for _, tc := range testCases {
@@ -114,6 +129,10 @@ func TestNewPostgreSQL(t *testing.T) {
 
 	if db.closed {
 		t.Error("Expected closed to be false")
+	}
+
+	if db.queryStats == nil {
+		t.Error("Expected queryStats to be initialized")
 	}
 }
 
@@ -448,5 +467,477 @@ func TestFunctionalOptions(t *testing.T) {
 				t.Errorf("Expected %s '%v', got '%v'", tc.name, tc.expected, tc.got)
 			}
 		})
+	}
+}
+
+// Test RLS multitenancy functionality
+func TestTenantContext(t *testing.T) {
+	tenant := TenantContext{
+		TenantID: "test-tenant",
+		SetAt:    time.Now(),
+	}
+
+	if !tenant.IsValid() {
+		t.Error("Expected valid tenant context")
+	}
+
+	if tenant.String() != "tenant:test-tenant" {
+		t.Errorf("Expected string representation, got %s", tenant.String())
+	}
+
+	// Test expiration
+	if tenant.IsExpired() {
+		t.Error("Expected tenant context to not be expired")
+	}
+
+	// Test expired context
+	expiredTenant := TenantContext{
+		TenantID: "expired-tenant",
+		SetAt:    time.Now().Add(-2 * time.Hour),
+	}
+	if !expiredTenant.IsExpired() {
+		t.Error("Expected expired tenant context to be expired")
+	}
+}
+
+func TestWithTenant(t *testing.T) {
+	config := &Config{
+		Host:                "test-host",
+		Port:                5432,
+		User:                "test-user",
+		Password:            "test-password",
+		Database:            "test-db",
+		MultitenancyEnabled: true,
+	}
+
+	db := NewPostgreSQL(config)
+	tenantDB := db.WithTenant("test-tenant")
+
+	if tenantDB == nil {
+		t.Error("Expected tenant database instance")
+	}
+
+	// Test that the original database is unchanged
+	if db.currentTenant != nil {
+		t.Error("Expected original database to be unchanged")
+	}
+
+	// Test that tenant context is set in new instance
+	tenantCtx, err := tenantDB.GetTenantContext(context.Background())
+	if err != nil {
+		t.Errorf("Expected no error getting tenant context: %v", err)
+	}
+
+	if tenantCtx.TenantID != "test-tenant" {
+		t.Errorf("Expected tenant ID 'test-tenant', got '%s'", tenantCtx.TenantID)
+	}
+}
+
+func TestRLSMultitenancyConfiguration(t *testing.T) {
+	config := NewConfig(
+		WithMultitenancy(true),
+		WithRLSContextVarName("custom.tenant_id"),
+		WithRLSContextTimeout(2*time.Hour),
+		WithTenantIDPattern(`^[a-z]{3,10}$`),
+		WithQueryStats(false),
+	)
+
+	if !config.MultitenancyEnabled {
+		t.Error("Expected multitenancy to be enabled")
+	}
+
+	if config.RLSContextVarName != "custom.tenant_id" {
+		t.Errorf("Expected RLS context var name 'custom.tenant_id', got '%s'", config.RLSContextVarName)
+	}
+
+	if config.RLSContextTimeout != 2*time.Hour {
+		t.Errorf("Expected RLS context timeout 2h, got %v", config.RLSContextTimeout)
+	}
+
+	if config.TenantIDPattern != `^[a-z]{3,10}$` {
+		t.Errorf("Expected tenant ID pattern, got '%s'", config.TenantIDPattern)
+	}
+
+	if config.EnableQueryStats {
+		t.Error("Expected query stats to be disabled")
+	}
+}
+
+func TestTenantContextValidation(t *testing.T) {
+	// Test valid tenant context
+	validTenant := TenantContext{
+		TenantID: "valid-tenant",
+		SetAt:    time.Now(),
+	}
+	if !validTenant.IsValid() {
+		t.Error("Expected valid tenant context to be validated")
+	}
+
+	// Test invalid tenant context
+	invalidTenant := TenantContext{
+		TenantID: "",
+		SetAt:    time.Now(),
+	}
+	if invalidTenant.IsValid() {
+		t.Error("Expected invalid tenant context to be invalid")
+	}
+
+	// Test null tenant ID
+	nullTenant := TenantContext{
+		TenantID: "null",
+		SetAt:    time.Now(),
+	}
+	if nullTenant.IsValid() {
+		t.Error("Expected null tenant ID to be invalid")
+	}
+
+	// Test undefined tenant ID
+	undefinedTenant := TenantContext{
+		TenantID: "undefined",
+		SetAt:    time.Now(),
+	}
+	if undefinedTenant.IsValid() {
+		t.Error("Expected undefined tenant ID to be invalid")
+	}
+}
+
+func TestTenantContextStringRepresentation(t *testing.T) {
+	tenant := TenantContext{
+		TenantID: "test",
+		SetAt:    time.Now(),
+	}
+
+	expected := "tenant:test"
+	if tenant.String() != expected {
+		t.Errorf("Expected '%s', got '%s'", expected, tenant.String())
+	}
+}
+
+// Test enhanced RLS functionality
+func TestTenantIDValidation(t *testing.T) {
+	config := &Config{
+		MultitenancyEnabled: true,
+		TenantIDPattern:     `^[a-zA-Z0-9_-]{3,50}$`,
+	}
+
+	db := &PostgreSQL{config: config}
+
+	// Test valid tenant IDs
+	validIDs := []string{
+		"tenant123",
+		"tenant_123",
+		"tenant-123",
+		"abc",
+		"a" + strings.Repeat("b", 49), // 50 characters
+	}
+
+	for _, id := range validIDs {
+		if err := db.validateTenantID(id); err != nil {
+			t.Errorf("Expected valid tenant ID '%s' to pass validation: %v", id, err)
+		}
+	}
+
+	// Test invalid tenant IDs
+	invalidIDs := []string{
+		"",                            // empty
+		"ab",                          // too short
+		"a" + strings.Repeat("b", 51), // too long
+		"tenant..123",                 // invalid sequence
+		"tenant--123",                 // invalid sequence
+		"tenant@123",                  // invalid character
+		"tenant 123",                  // space
+	}
+
+	for _, id := range invalidIDs {
+		if err := db.validateTenantID(id); err == nil {
+			t.Errorf("Expected invalid tenant ID '%s' to fail validation", id)
+		}
+	}
+}
+
+func TestRLSConfigurationOptions(t *testing.T) {
+	config := NewConfig(
+		WithRLSContextVarName("custom.tenant_id"),
+		WithRLSContextTimeout(30*time.Minute),
+		WithTenantIDPattern(`^[a-z]{3,10}$`),
+		WithQueryStats(false),
+	)
+
+	if config.RLSContextVarName != "custom.tenant_id" {
+		t.Errorf("Expected RLS context var name 'custom.tenant_id', got '%s'", config.RLSContextVarName)
+	}
+
+	if config.RLSContextTimeout != 30*time.Minute {
+		t.Errorf("Expected RLS context timeout 30m, got %v", config.RLSContextTimeout)
+	}
+
+	if config.TenantIDPattern != `^[a-z]{3,10}$` {
+		t.Errorf("Expected tenant ID pattern, got '%s'", config.TenantIDPattern)
+	}
+
+	if config.EnableQueryStats {
+		t.Error("Expected query stats to be disabled")
+	}
+}
+
+func TestTenantQueryStats(t *testing.T) {
+	stats := TenantQueryStats{
+		TenantID:        "test-tenant",
+		TotalQueries:    100,
+		TotalDuration:   5 * time.Second,
+		AverageDuration: 50 * time.Millisecond,
+		SlowQueries:     10,
+		FailedQueries:   5,
+		LastQueryAt:     time.Now(),
+		TableStats: map[string]int64{
+			"users":    50,
+			"orders":   30,
+			"products": 20,
+		},
+		QueryTypes: map[string]int64{
+			"SELECT": 70,
+			"INSERT": 20,
+			"UPDATE": 10,
+		},
+	}
+
+	if stats.TenantID != "test-tenant" {
+		t.Errorf("Expected tenant ID 'test-tenant', got '%s'", stats.TenantID)
+	}
+
+	if stats.TotalQueries != 100 {
+		t.Errorf("Expected total queries 100, got %d", stats.TotalQueries)
+	}
+
+	if stats.TotalDuration != 5*time.Second {
+		t.Errorf("Expected total duration 5s, got %v", stats.TotalDuration)
+	}
+
+	if stats.AverageDuration != 50*time.Millisecond {
+		t.Errorf("Expected average duration 50ms, got %v", stats.AverageDuration)
+	}
+
+	if stats.SlowQueries != 10 {
+		t.Errorf("Expected slow queries 10, got %d", stats.SlowQueries)
+	}
+
+	if stats.FailedQueries != 5 {
+		t.Errorf("Expected failed queries 5, got %d", stats.FailedQueries)
+	}
+
+	if len(stats.TableStats) != 3 {
+		t.Errorf("Expected 3 table stats, got %d", len(stats.TableStats))
+	}
+
+	if len(stats.QueryTypes) != 3 {
+		t.Errorf("Expected 3 query types, got %d", len(stats.QueryTypes))
+	}
+}
+
+func TestRLSPolicyStruct(t *testing.T) {
+	policy := RLSPolicy{
+		TableName:        "users",
+		PolicyName:       "tenant_isolation",
+		PolicyDefinition: "FOR ALL USING (tenant_id = current_setting('app.current_tenant_id')::text)",
+		IsActive:         true,
+		CreatedAt:        time.Now(),
+	}
+
+	if policy.TableName != "users" {
+		t.Errorf("Expected table name 'users', got '%s'", policy.TableName)
+	}
+
+	if policy.PolicyName != "tenant_isolation" {
+		t.Errorf("Expected policy name 'tenant_isolation', got '%s'", policy.PolicyName)
+	}
+
+	if policy.PolicyDefinition != "FOR ALL USING (tenant_id = current_setting('app.current_tenant_id')::text)" {
+		t.Errorf("Expected policy definition to match")
+	}
+
+	if !policy.IsActive {
+		t.Error("Expected policy to be active")
+	}
+}
+
+func TestQueryStatsInitialization(t *testing.T) {
+	db := &PostgreSQL{
+		config: &Config{
+			MultitenancyEnabled: true,
+			EnableQueryStats:    true,
+		},
+		queryStats: make(map[string]*TenantQueryStats),
+	}
+
+	// Test initialization
+	db.initializeQueryStats("tenant1")
+
+	if stats, exists := db.queryStats["tenant1"]; !exists {
+		t.Error("Expected query stats to be initialized for tenant1")
+	} else {
+		if stats.TenantID != "tenant1" {
+			t.Errorf("Expected tenant ID 'tenant1', got '%s'", stats.TenantID)
+		}
+		if stats.TotalQueries != 0 {
+			t.Errorf("Expected total queries 0, got %d", stats.TotalQueries)
+		}
+	}
+
+	// Test duplicate initialization doesn't overwrite
+	originalStats := db.queryStats["tenant1"]
+	db.initializeQueryStats("tenant1")
+	if db.queryStats["tenant1"] != originalStats {
+		t.Error("Expected duplicate initialization to not overwrite existing stats")
+	}
+}
+
+func TestQueryStatsUpdate(t *testing.T) {
+	db := &PostgreSQL{
+		config: &Config{
+			MultitenancyEnabled: true,
+			EnableQueryStats:    true,
+		},
+		queryStats: make(map[string]*TenantQueryStats),
+	}
+
+	// Initialize stats
+	db.initializeQueryStats("tenant1")
+
+	// Update stats - use times that are clearly above/below the 100ms threshold
+	db.updateQueryStats("tenant1", 50*time.Millisecond, "SELECT", "users", true)
+	db.updateQueryStats("tenant1", 150*time.Millisecond, "INSERT", "orders", false)
+
+	stats := db.queryStats["tenant1"]
+	if stats.TotalQueries != 2 {
+		t.Errorf("Expected total queries 2, got %d", stats.TotalQueries)
+	}
+
+	if stats.SlowQueries != 1 {
+		t.Errorf("Expected slow queries 1 (only 150ms > 100ms), got %d", stats.SlowQueries)
+	}
+
+	if stats.FailedQueries != 1 {
+		t.Errorf("Expected failed queries 1, got %d", stats.FailedQueries)
+	}
+
+	if stats.TableStats["users"] != 1 {
+		t.Errorf("Expected users table queries 1, got %d", stats.TableStats["users"])
+	}
+
+	if stats.QueryTypes["SELECT"] != 1 {
+		t.Errorf("Expected SELECT queries 1, got %d", stats.QueryTypes["SELECT"])
+	}
+}
+
+func TestQueryStatsDisabled(t *testing.T) {
+	db := &PostgreSQL{
+		config: &Config{
+			MultitenancyEnabled: true,
+			EnableQueryStats:    false,
+		},
+		queryStats: make(map[string]*TenantQueryStats),
+	}
+
+	// initializeQueryStats still creates the structure even when disabled
+	db.initializeQueryStats("tenant1")
+
+	// updateQueryStats should be a no-op when disabled
+	db.updateQueryStats("tenant1", 100*time.Millisecond, "SELECT", "users", true)
+
+	// The structure should exist but no queries should be tracked
+	if stats, exists := db.queryStats["tenant1"]; !exists {
+		t.Error("Expected query stats structure to be created")
+	} else if stats.TotalQueries != 0 {
+		t.Errorf("Expected no queries to be tracked when disabled, got %d", stats.TotalQueries)
+	}
+}
+
+func TestTenantContextExpiration(t *testing.T) {
+	// Test non-expired context
+	recentTenant := TenantContext{
+		TenantID: "recent",
+		SetAt:    time.Now(),
+	}
+	if recentTenant.IsExpired() {
+		t.Error("Expected recent tenant context to not be expired")
+	}
+
+	// Test expired context
+	expiredTenant := TenantContext{
+		TenantID: "expired",
+		SetAt:    time.Now().Add(-2 * time.Hour),
+	}
+	if !expiredTenant.IsExpired() {
+		t.Error("Expected expired tenant context to be expired")
+	}
+
+	// Test boundary case (exactly 1 hour) - should be expired
+	boundaryTenant := TenantContext{
+		TenantID: "boundary",
+		SetAt:    time.Now().Add(-1 * time.Hour),
+	}
+	if !boundaryTenant.IsExpired() {
+		t.Error("Expected boundary tenant context to be expired")
+	}
+}
+
+func TestTenantIDPatternValidation(t *testing.T) {
+	// Test default pattern
+	pattern := `^[a-zA-Z0-9_-]{3,50}$`
+	matched, err := regexp.MatchString(pattern, "valid-tenant_123")
+	if err != nil {
+		t.Errorf("Failed to compile regex pattern: %v", err)
+	}
+	if !matched {
+		t.Error("Expected 'valid-tenant_123' to match pattern")
+	}
+
+	// Test invalid patterns
+	invalidIDs := []string{
+		"ab",                          // too short
+		"a" + strings.Repeat("b", 51), // too long
+		"tenant@123",                  // invalid character
+		"tenant 123",                  // space
+		"tenant..123",                 // invalid sequence
+	}
+
+	for _, id := range invalidIDs {
+		matched, _ := regexp.MatchString(pattern, id)
+		if matched {
+			t.Errorf("Expected '%s' to not match pattern", id)
+		}
+	}
+}
+
+func TestMultitenancyDisabledBehavior(t *testing.T) {
+	config := &Config{
+		MultitenancyEnabled: false,
+	}
+
+	db := &PostgreSQL{config: config}
+
+	// All multitenancy methods should return early when disabled
+	if err := db.SetTenantContext(context.Background(), "tenant1"); err != nil {
+		t.Errorf("Expected no error when multitenancy disabled: %v", err)
+	}
+
+	if err := db.ClearTenantContext(context.Background()); err != nil {
+		t.Errorf("Expected no error when multitenancy disabled: %v", err)
+	}
+
+	if err := db.EnableRLS(context.Background(), "users"); err == nil {
+		t.Error("Expected error when trying to enable RLS with multitenancy disabled")
+	}
+
+	if err := db.CreateRLSPolicy(context.Background(), "users", "policy", "definition"); err == nil {
+		t.Error("Expected error when trying to create RLS policy with multitenancy disabled")
+	}
+
+	if err := db.VerifyRLSIsolation(context.Background(), "users"); err == nil {
+		t.Error("Expected error when trying to verify RLS isolation with multitenancy disabled")
+	}
+
+	if _, err := db.GetTenantQueryStats(context.Background()); err == nil {
+		t.Error("Expected error when trying to get query stats with multitenancy disabled")
 	}
 }

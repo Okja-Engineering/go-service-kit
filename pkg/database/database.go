@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +25,19 @@ type Database interface {
 	// Migration support
 	Migrate(migrations []Migration) error
 	GetMigrationVersion() (int, error)
+
+	// RLS Multitenancy support
+	WithTenant(tenantID string) Database
+	SetTenantContext(ctx context.Context, tenantID string) error
+	GetTenantContext(ctx context.Context) (TenantContext, error)
+	ClearTenantContext(ctx context.Context) error
+
+	// RLS Management
+	EnableRLS(ctx context.Context, tableName string) error
+	CreateRLSPolicy(ctx context.Context, tableName, policyName, policyDefinition string) error
+	DropRLSPolicy(ctx context.Context, tableName, policyName string) error
+	VerifyRLSIsolation(ctx context.Context, tableName string) error
+	GetTenantQueryStats(ctx context.Context) (TenantQueryStats, error)
 }
 
 // ConnectionStats provides information about database connections
@@ -56,6 +71,49 @@ type Migration struct {
 	DownSQL     string
 }
 
+// TenantContext holds tenant-specific information for RLS multitenancy
+type TenantContext struct {
+	TenantID string    `json:"tenantID"`
+	SetAt    time.Time `json:"setAt,omitempty"` // When tenant context was set
+}
+
+// TenantQueryStats provides performance metrics for tenant-specific queries
+type TenantQueryStats struct {
+	TenantID        string           `json:"tenantID"`
+	TotalQueries    int64            `json:"totalQueries"`
+	TotalDuration   time.Duration    `json:"totalDuration"`
+	AverageDuration time.Duration    `json:"averageDuration"`
+	SlowQueries     int64            `json:"slowQueries"` // Queries > 100ms
+	FailedQueries   int64            `json:"failedQueries"`
+	LastQueryAt     time.Time        `json:"lastQueryAt"`
+	TableStats      map[string]int64 `json:"tableStats"` // Queries per table
+	QueryTypes      map[string]int64 `json:"queryTypes"` // SELECT, INSERT, etc.
+}
+
+// RLSPolicy represents a Row Level Security policy
+type RLSPolicy struct {
+	TableName        string    `json:"tableName"`
+	PolicyName       string    `json:"policyName"`
+	PolicyDefinition string    `json:"policyDefinition"`
+	IsActive         bool      `json:"isActive"`
+	CreatedAt        time.Time `json:"createdAt"`
+}
+
+// String returns a string representation of the tenant context
+func (tc TenantContext) String() string {
+	return fmt.Sprintf("tenant:%s", tc.TenantID)
+}
+
+// IsValid checks if the tenant context is valid
+func (tc TenantContext) IsValid() bool {
+	return tc.TenantID != "" && tc.TenantID != "null" && tc.TenantID != "undefined"
+}
+
+// IsExpired checks if the tenant context has expired (older than 1 hour)
+func (tc TenantContext) IsExpired() bool {
+	return time.Since(tc.SetAt) > time.Hour
+}
+
 // Config holds database configuration
 type Config struct {
 	Host            string
@@ -72,6 +130,13 @@ type Config struct {
 	QueryTimeout    time.Duration
 	RetryAttempts   int
 	RetryDelay      time.Duration
+
+	// RLS Multitenancy configuration
+	MultitenancyEnabled bool
+	RLSContextVarName   string        // Default: "app.current_tenant_id"
+	RLSContextTimeout   time.Duration // Default: 1 hour
+	TenantIDPattern     string        // Regex pattern for tenant ID validation
+	EnableQueryStats    bool          // Enable tenant query performance tracking
 }
 
 // DefaultConfig returns a secure default configuration
@@ -91,6 +156,13 @@ func DefaultConfig() *Config {
 		QueryTimeout:    30 * time.Second,
 		RetryAttempts:   3,
 		RetryDelay:      1 * time.Second,
+
+		// RLS Multitenancy defaults
+		MultitenancyEnabled: false,
+		RLSContextVarName:   "app.current_tenant_id",
+		RLSContextTimeout:   time.Hour,
+		TenantIDPattern:     `^[a-zA-Z0-9_-]{3,50}$`, // Alphanumeric, underscore, hyphen, 3-50 chars
+		EnableQueryStats:    true,
 	}
 }
 
@@ -195,6 +267,41 @@ func WithRetryDelay(delay time.Duration) Option {
 	}
 }
 
+// WithMultitenancy enables RLS multitenancy support
+func WithMultitenancy(enabled bool) Option {
+	return func(c *Config) {
+		c.MultitenancyEnabled = enabled
+	}
+}
+
+// WithRLSContextVarName sets the PostgreSQL variable name for RLS context
+func WithRLSContextVarName(varName string) Option {
+	return func(c *Config) {
+		c.RLSContextVarName = varName
+	}
+}
+
+// WithRLSContextTimeout sets the timeout for RLS context
+func WithRLSContextTimeout(timeout time.Duration) Option {
+	return func(c *Config) {
+		c.RLSContextTimeout = timeout
+	}
+}
+
+// WithTenantIDPattern sets the regex pattern for tenant ID validation
+func WithTenantIDPattern(pattern string) Option {
+	return func(c *Config) {
+		c.TenantIDPattern = pattern
+	}
+}
+
+// WithQueryStats enables or disables tenant query performance tracking
+func WithQueryStats(enabled bool) Option {
+	return func(c *Config) {
+		c.EnableQueryStats = enabled
+	}
+}
+
 // NewConfig creates a new database configuration with options
 func NewConfig(options ...Option) *Config {
 	config := DefaultConfig()
@@ -210,12 +317,21 @@ type PostgreSQL struct {
 	db     *sql.DB
 	mu     sync.RWMutex
 	closed bool
+
+	// RLS Multitenancy support
+	currentTenant *TenantContext
+	tenantMu      sync.RWMutex
+
+	// Query statistics tracking
+	queryStats map[string]*TenantQueryStats
+	statsMu    sync.RWMutex
 }
 
 // NewPostgreSQL creates a new PostgreSQL database instance
 func NewPostgreSQL(config *Config) *PostgreSQL {
 	return &PostgreSQL{
-		config: config,
+		config:     config,
+		queryStats: make(map[string]*TenantQueryStats),
 	}
 }
 
@@ -458,4 +574,354 @@ func (p *PostgreSQL) sortMigrations(migrations []Migration) []Migration {
 func NewPostgreSQLWithOptions(options ...Option) *PostgreSQL {
 	config := NewConfig(options...)
 	return NewPostgreSQL(config)
+}
+
+// RLS Multitenancy methods
+
+// WithTenant returns a new database instance configured for the specified tenant
+func (p *PostgreSQL) WithTenant(tenantID string) Database {
+	if !p.config.MultitenancyEnabled {
+		return p
+	}
+
+	tenant := &TenantContext{
+		TenantID: tenantID,
+		SetAt:    time.Now(),
+	}
+
+	// Create a new instance with the tenant context
+	newDB := &PostgreSQL{
+		config:        p.config,
+		db:            p.db,
+		mu:            sync.RWMutex{},
+		closed:        p.closed,
+		currentTenant: tenant,
+		tenantMu:      sync.RWMutex{},
+		queryStats:    make(map[string]*TenantQueryStats),
+		statsMu:       sync.RWMutex{},
+	}
+
+	return newDB
+}
+
+// SetTenantContext sets the tenant context for the current database session
+func (p *PostgreSQL) SetTenantContext(ctx context.Context, tenantID string) error {
+	if !p.config.MultitenancyEnabled {
+		return nil
+	}
+
+	// Validate tenant ID
+	if err := p.validateTenantID(tenantID); err != nil {
+		return fmt.Errorf("invalid tenant ID: %w", err)
+	}
+
+	p.tenantMu.Lock()
+	defer p.tenantMu.Unlock()
+
+	// Set RLS context variable
+	query := fmt.Sprintf(`SELECT set_config('%s', $1, false)`, p.config.RLSContextVarName)
+	_, err := p.db.ExecContext(ctx, query, tenantID)
+	if err != nil {
+		return fmt.Errorf("failed to set RLS tenant context: %w", err)
+	}
+
+	p.currentTenant = &TenantContext{
+		TenantID: tenantID,
+		SetAt:    time.Now(),
+	}
+
+	// Track query statistics if enabled
+	if p.config.EnableQueryStats {
+		p.initializeQueryStats(tenantID)
+	}
+
+	log.Printf("### 🗄️ Database: Set RLS tenant context: %s", tenantID)
+	return nil
+}
+
+// GetTenantContext returns the current tenant context
+func (p *PostgreSQL) GetTenantContext(ctx context.Context) (TenantContext, error) {
+	if !p.config.MultitenancyEnabled {
+		return TenantContext{}, nil
+	}
+
+	p.tenantMu.RLock()
+	defer p.tenantMu.RUnlock()
+
+	if p.currentTenant != nil {
+		// Check if context has expired
+		if p.currentTenant.IsExpired() {
+			log.Printf("Warning: tenant context expired for tenant %s", p.currentTenant.TenantID)
+		}
+		return *p.currentTenant, nil
+	}
+
+	// Try to get from database context
+	query := fmt.Sprintf(`SELECT current_setting('%s', true)`, p.config.RLSContextVarName)
+	var tenantID string
+	err := p.db.QueryRowContext(ctx, query).Scan(&tenantID)
+	if err != nil {
+		return TenantContext{}, fmt.Errorf("failed to get RLS tenant context: %w", err)
+	}
+
+	if tenantID == "" {
+		return TenantContext{}, nil
+	}
+
+	return TenantContext{
+		TenantID: tenantID,
+		SetAt:    time.Now(),
+	}, nil
+}
+
+// ClearTenantContext clears the current tenant context
+func (p *PostgreSQL) ClearTenantContext(ctx context.Context) error {
+	if !p.config.MultitenancyEnabled {
+		return nil
+	}
+
+	p.tenantMu.Lock()
+	defer p.tenantMu.Unlock()
+
+	// Clear RLS context variable
+	query := fmt.Sprintf(`SELECT set_config('%s', '', false)`, p.config.RLSContextVarName)
+	_, err := p.db.ExecContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to clear RLS tenant context: %w", err)
+	}
+
+	p.currentTenant = nil
+
+	log.Printf("### 🗄️ Database: Cleared RLS tenant context")
+	return nil
+}
+
+// RLS Management methods
+
+// EnableRLS enables Row Level Security on a table
+func (p *PostgreSQL) EnableRLS(ctx context.Context, tableName string) error {
+	if !p.config.MultitenancyEnabled {
+		return fmt.Errorf("multitenancy is not enabled")
+	}
+
+	query := fmt.Sprintf(`ALTER TABLE %s ENABLE ROW LEVEL SECURITY`, tableName)
+
+	ctx, cancel := context.WithTimeout(ctx, p.config.QueryTimeout)
+	defer cancel()
+
+	_, err := p.db.ExecContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to enable RLS on table %s: %w", tableName, err)
+	}
+
+	log.Printf("### 🗄️ Database: Enabled RLS on table: %s", tableName)
+	return nil
+}
+
+// CreateRLSPolicy creates a new RLS policy on a table
+func (p *PostgreSQL) CreateRLSPolicy(ctx context.Context, tableName, policyName, policyDefinition string) error {
+	if !p.config.MultitenancyEnabled {
+		return fmt.Errorf("multitenancy is not enabled")
+	}
+
+	query := fmt.Sprintf(`CREATE POLICY %s ON %s %s`, policyName, tableName, policyDefinition)
+
+	ctx, cancel := context.WithTimeout(ctx, p.config.QueryTimeout)
+	defer cancel()
+
+	_, err := p.db.ExecContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to create RLS policy %s on table %s: %w", policyName, tableName, err)
+	}
+
+	log.Printf("### 🗄️ Database: Created RLS policy %s on table: %s", policyName, tableName)
+	return nil
+}
+
+// DropRLSPolicy drops an RLS policy from a table
+func (p *PostgreSQL) DropRLSPolicy(ctx context.Context, tableName, policyName string) error {
+	if !p.config.MultitenancyEnabled {
+		return fmt.Errorf("multitenancy is not enabled")
+	}
+
+	query := fmt.Sprintf(`DROP POLICY IF EXISTS %s ON %s`, policyName, tableName)
+
+	ctx, cancel := context.WithTimeout(ctx, p.config.QueryTimeout)
+	defer cancel()
+
+	_, err := p.db.ExecContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to drop RLS policy %s from table %s: %w", policyName, tableName, err)
+	}
+
+	log.Printf("### 🗄️ Database: Dropped RLS policy %s from table: %s", policyName, tableName)
+	return nil
+}
+
+// VerifyRLSIsolation verifies that RLS is working correctly for the current tenant
+func (p *PostgreSQL) VerifyRLSIsolation(ctx context.Context, tableName string) error {
+	if !p.config.MultitenancyEnabled {
+		return fmt.Errorf("multitenancy is not enabled")
+	}
+
+	p.tenantMu.RLock()
+	tenant := p.currentTenant
+	p.tenantMu.RUnlock()
+
+	if tenant == nil || tenant.TenantID == "" {
+		return fmt.Errorf("no tenant context set")
+	}
+
+	// Test query to verify RLS is working
+	testQuery := fmt.Sprintf(`SELECT COUNT(*) FROM %s LIMIT 1`, tableName)
+
+	ctx, cancel := context.WithTimeout(ctx, p.config.QueryTimeout)
+	defer cancel()
+
+	var count int
+	err := p.db.QueryRowContext(ctx, testQuery).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to verify RLS isolation: %w", err)
+	}
+
+	log.Printf("### 🗄️ Database: Verified RLS isolation for tenant %s on table %s", tenant.TenantID, tableName)
+	return nil
+}
+
+// GetTenantQueryStats returns performance statistics for the current tenant
+func (p *PostgreSQL) GetTenantQueryStats(ctx context.Context) (TenantQueryStats, error) {
+	if !p.config.MultitenancyEnabled || !p.config.EnableQueryStats {
+		return TenantQueryStats{}, fmt.Errorf("query statistics not enabled")
+	}
+
+	p.tenantMu.RLock()
+	tenant := p.currentTenant
+	p.tenantMu.RUnlock()
+
+	if tenant == nil || tenant.TenantID == "" {
+		return TenantQueryStats{}, fmt.Errorf("no tenant context set")
+	}
+
+	p.statsMu.RLock()
+	stats, exists := p.queryStats[tenant.TenantID]
+	p.statsMu.RUnlock()
+
+	if !exists {
+		return TenantQueryStats{
+			TenantID:        tenant.TenantID,
+			TotalQueries:    0,
+			TotalDuration:   0,
+			AverageDuration: 0,
+			SlowQueries:     0,
+			FailedQueries:   0,
+			LastQueryAt:     time.Time{},
+			TableStats:      make(map[string]int64),
+			QueryTypes:      make(map[string]int64),
+		}, nil
+	}
+
+	return *stats, nil
+}
+
+// Utility methods
+
+// validateTenantID validates a tenant ID against the configured pattern
+func (p *PostgreSQL) validateTenantID(tenantID string) error {
+	if tenantID == "" {
+		return fmt.Errorf("tenant ID cannot be empty")
+	}
+
+	if len(tenantID) < 3 || len(tenantID) > 50 {
+		return fmt.Errorf("tenant ID must be between 3 and 50 characters")
+	}
+
+	// Check against regex pattern if configured
+	if p.config.TenantIDPattern != "" {
+		matched, err := regexp.MatchString(p.config.TenantIDPattern, tenantID)
+		if err != nil {
+			return fmt.Errorf("failed to validate tenant ID pattern: %w", err)
+		}
+		if !matched {
+			return fmt.Errorf("tenant ID '%s' does not match pattern '%s'", tenantID, p.config.TenantIDPattern)
+		}
+	}
+
+	// Additional security checks
+	if strings.Contains(tenantID, "..") || strings.Contains(tenantID, "--") {
+		return fmt.Errorf("tenant ID contains invalid sequences")
+	}
+
+	return nil
+}
+
+// initializeQueryStats initializes query statistics tracking for a tenant
+func (p *PostgreSQL) initializeQueryStats(tenantID string) {
+	p.statsMu.Lock()
+	defer p.statsMu.Unlock()
+
+	if _, exists := p.queryStats[tenantID]; !exists {
+		p.queryStats[tenantID] = &TenantQueryStats{
+			TenantID:        tenantID,
+			TotalQueries:    0,
+			TotalDuration:   0,
+			AverageDuration: 0,
+			SlowQueries:     0,
+			FailedQueries:   0,
+			LastQueryAt:     time.Time{},
+			TableStats:      make(map[string]int64),
+			QueryTypes:      make(map[string]int64),
+		}
+	}
+}
+
+// updateQueryStats updates query statistics for the current tenant
+func (p *PostgreSQL) updateQueryStats(tenantID string, duration time.Duration, queryType, tableName string, success bool) {
+	if !p.config.EnableQueryStats {
+		return
+	}
+
+	p.statsMu.Lock()
+	defer p.statsMu.Unlock()
+
+	stats, exists := p.queryStats[tenantID]
+	if !exists {
+		stats = &TenantQueryStats{
+			TenantID:        tenantID,
+			TotalQueries:    0,
+			TotalDuration:   0,
+			AverageDuration: 0,
+			SlowQueries:     0,
+			FailedQueries:   0,
+			LastQueryAt:     time.Time{},
+			TableStats:      make(map[string]int64),
+			QueryTypes:      make(map[string]int64),
+		}
+		p.queryStats[tenantID] = stats
+	}
+
+	// Update statistics
+	stats.TotalQueries++
+	stats.TotalDuration += duration
+	stats.AverageDuration = stats.TotalDuration / time.Duration(stats.TotalQueries)
+	stats.LastQueryAt = time.Now()
+
+	// Track slow queries (> 100ms)
+	if duration > 100*time.Millisecond {
+		stats.SlowQueries++
+	}
+
+	// Track failed queries
+	if !success {
+		stats.FailedQueries++
+	}
+
+	// Track table usage
+	if tableName != "" {
+		stats.TableStats[tableName]++
+	}
+
+	// Track query types
+	if queryType != "" {
+		stats.QueryTypes[queryType]++
+	}
 }
