@@ -1,4 +1,4 @@
-VERSION ?= 0.1.0
+VERSION ?= 0.2.0
 
 REPO_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 

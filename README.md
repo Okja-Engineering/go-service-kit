@@ -27,7 +27,7 @@ go get github.com/Okja-Engineering/go-service-kit
 go get github.com/Okja-Engineering/go-service-kit@latest
 
 # Specific version (recommended for production)
-go get github.com/Okja-Engineering/go-service-kit@v0.1.0
+go get github.com/Okja-Engineering/go-service-kit@v0.2.0
 
 # Latest commit on main (development)
 go get github.com/Okja-Engineering/go-service-kit@main
@@ -36,7 +36,7 @@ go get github.com/Okja-Engineering/go-service-kit@main
 ### In Your go.mod
 ```go
 require (
-    github.com/Okja-Engineering/go-service-kit v0.1.0
+    github.com/Okja-Engineering/go-service-kit v0.2.0
 )
 ```
 

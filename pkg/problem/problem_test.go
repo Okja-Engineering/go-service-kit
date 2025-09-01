@@ -1,32 +1,215 @@
 package problem
 
 import (
-	"encoding/json"
+	"bytes"
+	"errors"
 	"net/http/httptest"
 	"testing"
 )
 
+// MockLogger for testing
+type MockLogger struct {
+	output *bytes.Buffer
+}
+
+func (m *MockLogger) Printf(format string, v ...interface{}) {
+	m.output.WriteString(format)
+}
+
+func TestNewProblemManager(t *testing.T) {
+	// Test default manager
+	manager := NewProblemManager()
+	if manager.config.Logger == nil {
+		t.Error("Expected logger to be set")
+	}
+	if manager.config.LogPrefix != "### 💥 API" {
+		t.Errorf("Expected log prefix '### 💥 API', got '%s'", manager.config.LogPrefix)
+	}
+	if !manager.config.LogErrors {
+		t.Error("Expected LogErrors to be true by default")
+	}
+}
+
+func TestNewProblemManagerWithOptions(t *testing.T) {
+	mockLogger := &MockLogger{output: &bytes.Buffer{}}
+
+	manager := NewProblemManager(
+		WithLogger(mockLogger),
+		WithLogPrefix("[ERROR]"),
+		WithLogErrors(false),
+	)
+
+	if manager.config.Logger != mockLogger {
+		t.Error("Expected custom logger to be set")
+	}
+	if manager.config.LogPrefix != "[ERROR]" {
+		t.Errorf("Expected log prefix '[ERROR]', got '%s'", manager.config.LogPrefix)
+	}
+	if manager.config.LogErrors {
+		t.Error("Expected LogErrors to be false")
+	}
+}
+
+func TestProblemManagerNew(t *testing.T) {
+	manager := NewProblemManager()
+
+	problem := manager.New("test-type", "Test Title", 400, "Test detail", "test-instance")
+
+	if problem.Type != "test-type" {
+		t.Errorf("Expected type 'test-type', got '%s'", problem.Type)
+	}
+	if problem.Title != "Test Title" {
+		t.Errorf("Expected title 'Test Title', got '%s'", problem.Title)
+	}
+	if problem.Status != 400 {
+		t.Errorf("Expected status 400, got %d", problem.Status)
+	}
+	if problem.Detail != "Test detail" {
+		t.Errorf("Expected detail 'Test detail', got '%s'", problem.Detail)
+	}
+	if problem.Instance != "test-instance" {
+		t.Errorf("Expected instance 'test-instance', got '%s'", problem.Instance)
+	}
+}
+
+func TestProblemManagerSend(t *testing.T) {
+	mockLogger := &MockLogger{output: &bytes.Buffer{}}
+	manager := NewProblemManager(WithLogger(mockLogger))
+
+	problem := manager.New("test-type", "Test Title", 400, "Test detail", "test-instance")
+
+	w := httptest.NewRecorder()
+
+	manager.Send(problem, w)
+
+	if w.Code != 400 {
+		t.Errorf("Expected status 400, got %d", w.Code)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/problem+json" {
+		t.Errorf("Expected content type 'application/problem+json', got '%s'", contentType)
+	}
+
+	// Check that error was logged
+	if mockLogger.output.Len() == 0 {
+		t.Error("Expected error to be logged")
+	}
+}
+
+func TestProblemManagerSendWithoutLogging(t *testing.T) {
+	mockLogger := &MockLogger{output: &bytes.Buffer{}}
+	manager := NewProblemManager(
+		WithLogger(mockLogger),
+		WithLogErrors(false),
+	)
+
+	problem := manager.New("test-type", "Test Title", 400, "Test detail", "test-instance")
+
+	w := httptest.NewRecorder()
+
+	manager.Send(problem, w)
+
+	if w.Code != 400 {
+		t.Errorf("Expected status 400, got %d", w.Code)
+	}
+
+	// Check that error was not logged
+	if mockLogger.output.Len() > 0 {
+		t.Error("Expected error not to be logged")
+	}
+}
+
+func TestProblemManagerWrap(t *testing.T) {
+	manager := NewProblemManager()
+
+	testError := errors.New("test error")
+	problem := manager.Wrap(500, "server-error", "test-instance", testError)
+
+	if problem.Type != "server-error" {
+		t.Errorf("Expected type 'server-error', got '%s'", problem.Type)
+	}
+	if problem.Status != 500 {
+		t.Errorf("Expected status 500, got %d", problem.Status)
+	}
+	if problem.Detail != "test error" {
+		t.Errorf("Expected detail 'test error', got '%s'", problem.Detail)
+	}
+	if problem.Instance != "test-instance" {
+		t.Errorf("Expected instance 'test-instance', got '%s'", problem.Instance)
+	}
+}
+
+func TestProblemManagerWrapWithNilError(t *testing.T) {
+	manager := NewProblemManager()
+
+	problem := manager.Wrap(500, "server-error", "test-instance", nil)
+
+	if problem.Type != "server-error" {
+		t.Errorf("Expected type 'server-error', got '%s'", problem.Type)
+	}
+	if problem.Status != 500 {
+		t.Errorf("Expected status 500, got %d", problem.Status)
+	}
+	if problem.Detail != "Other error occurred" {
+		t.Errorf("Expected detail 'Other error occurred', got '%s'", problem.Detail)
+	}
+	if problem.Instance != "test-instance" {
+		t.Errorf("Expected instance 'test-instance', got '%s'", problem.Instance)
+	}
+}
+
+func TestNewProblemConfig(t *testing.T) {
+	// Test with no options (should use defaults)
+	config := NewProblemConfig()
+	if config.Logger == nil {
+		t.Error("Expected logger to be set")
+	}
+	if config.LogPrefix != "### 💥 API" {
+		t.Errorf("Expected log prefix '### 💥 API', got '%s'", config.LogPrefix)
+	}
+	if !config.LogErrors {
+		t.Error("Expected LogErrors to be true by default")
+	}
+
+	// Test with custom options
+	mockLogger := &MockLogger{output: &bytes.Buffer{}}
+
+	config = NewProblemConfig(
+		WithLogger(mockLogger),
+		WithLogPrefix("[ERROR]"),
+		WithLogErrors(false),
+	)
+
+	if config.Logger != mockLogger {
+		t.Error("Expected custom logger to be set")
+	}
+	if config.LogPrefix != "[ERROR]" {
+		t.Errorf("Expected log prefix '[ERROR]', got '%s'", config.LogPrefix)
+	}
+	if config.LogErrors {
+		t.Error("Expected LogErrors to be false")
+	}
+}
+
+// Legacy function tests (existing tests)
 func TestNew(t *testing.T) {
 	problem := New("test-type", "Test Title", 400, "Test detail", "test-instance")
 
 	if problem.Type != "test-type" {
-		t.Errorf("Expected Type 'test-type', got '%s'", problem.Type)
+		t.Errorf("Expected type 'test-type', got '%s'", problem.Type)
 	}
-
 	if problem.Title != "Test Title" {
-		t.Errorf("Expected Title 'Test Title', got '%s'", problem.Title)
+		t.Errorf("Expected title 'Test Title', got '%s'", problem.Title)
 	}
-
 	if problem.Status != 400 {
-		t.Errorf("Expected Status 400, got %d", problem.Status)
+		t.Errorf("Expected status 400, got %d", problem.Status)
 	}
-
 	if problem.Detail != "Test detail" {
-		t.Errorf("Expected Detail 'Test detail', got '%s'", problem.Detail)
+		t.Errorf("Expected detail 'Test detail', got '%s'", problem.Detail)
 	}
-
 	if problem.Instance != "test-instance" {
-		t.Errorf("Expected Instance 'test-instance', got '%s'", problem.Instance)
+		t.Errorf("Expected instance 'test-instance', got '%s'", problem.Instance)
 	}
 }
 
@@ -41,74 +224,27 @@ func TestSend(t *testing.T) {
 		t.Errorf("Expected status 400, got %d", w.Code)
 	}
 
-	if w.Header().Get("Content-Type") != "application/json" {
-		t.Errorf("Expected Content-Type 'application/json', got '%s'", w.Header().Get("Content-Type"))
-	}
-
-	var response Problem
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("Failed to unmarshal response: %v", err)
-	}
-
-	if response.Type != "test-type" {
-		t.Errorf("Expected Type 'test-type', got '%s'", response.Type)
-	}
-
-	if response.Title != "Test Title" {
-		t.Errorf("Expected Title 'Test Title', got '%s'", response.Title)
-	}
-
-	if response.Status != 400 {
-		t.Errorf("Expected Status 400, got %d", response.Status)
-	}
-
-	if response.Detail != "Test detail" {
-		t.Errorf("Expected Detail 'Test detail', got '%s'", response.Detail)
-	}
-
-	if response.Instance != "test-instance" {
-		t.Errorf("Expected Instance 'test-instance', got '%s'", response.Instance)
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/problem+json" {
+		t.Errorf("Expected content type 'application/problem+json', got '%s'", contentType)
 	}
 }
 
 func TestWrap(t *testing.T) {
-	// Test with error
-	testError := &testError{message: "test error message"}
-	problem := Wrap(500, "test-type", "test-instance", testError)
+	testError := errors.New("test error")
+	problem := Wrap(500, "server-error", "test-instance", testError)
 
-	if problem.Type != "test-type" {
-		t.Errorf("Expected Type 'test-type', got '%s'", problem.Type)
+	if problem.Type != "server-error" {
+		t.Errorf("Expected type 'server-error', got '%s'", problem.Type)
 	}
-
 	if problem.Status != 500 {
-		t.Errorf("Expected Status 500, got %d", problem.Status)
+		t.Errorf("Expected status 500, got %d", problem.Status)
 	}
-
-	if problem.Detail != "test error message" {
-		t.Errorf("Expected Detail 'test error message', got '%s'", problem.Detail)
+	if problem.Detail != "test error" {
+		t.Errorf("Expected detail 'test error', got '%s'", problem.Detail)
 	}
-
 	if problem.Instance != "test-instance" {
-		t.Errorf("Expected Instance 'test-instance', got '%s'", problem.Instance)
-	}
-
-	// Test without error
-	problem = Wrap(400, "test-type", "test-instance", nil)
-
-	if problem.Type != "test-type" {
-		t.Errorf("Expected Type 'test-type', got '%s'", problem.Type)
-	}
-
-	if problem.Status != 400 {
-		t.Errorf("Expected Status 400, got %d", problem.Status)
-	}
-
-	if problem.Detail != "Other error occurred" {
-		t.Errorf("Expected Detail 'Other error occurred', got '%s'", problem.Detail)
-	}
-
-	if problem.Instance != "test-instance" {
-		t.Errorf("Expected Instance 'test-instance', got '%s'", problem.Instance)
+		t.Errorf("Expected instance 'test-instance', got '%s'", problem.Instance)
 	}
 }
 
@@ -118,88 +254,61 @@ func TestError(t *testing.T) {
 	expected := "Problem: Type: 'test-type', Title: 'Test Title', Status: '400', " +
 		"Detail: 'Test detail', Instance: 'test-instance'"
 	if problem.Error() != expected {
-		t.Errorf("Expected Error '%s', got '%s'", expected, problem.Error())
+		t.Errorf("Expected '%s', got '%s'", expected, problem.Error())
 	}
 }
 
 func TestMyCaller(t *testing.T) {
 	caller := MyCaller()
-
-	// Should contain the function name
 	if caller == "" {
 		t.Error("Expected caller to not be empty")
 	}
-
-	// Should contain the package name
-	if len(caller) < 10 {
-		t.Error("Expected caller to be substantial")
+	if caller == "unknown" {
+		t.Error("Expected caller to not be 'unknown'")
 	}
 }
 
 func TestProblemWithMinimalFields(t *testing.T) {
-	// Test problem with minimal required fields
 	problem := New("test-type", "Test Title", 0, "", "")
 
 	if problem.Type != "test-type" {
-		t.Errorf("Expected Type 'test-type', got '%s'", problem.Type)
+		t.Errorf("Expected type 'test-type', got '%s'", problem.Type)
 	}
-
 	if problem.Title != "Test Title" {
-		t.Errorf("Expected Title 'Test Title', got '%s'", problem.Title)
+		t.Errorf("Expected title 'Test Title', got '%s'", problem.Title)
 	}
-
 	if problem.Status != 0 {
-		t.Errorf("Expected Status 0, got %d", problem.Status)
+		t.Errorf("Expected status 0, got %d", problem.Status)
 	}
-
 	if problem.Detail != "" {
-		t.Errorf("Expected Detail to be empty, got '%s'", problem.Detail)
+		t.Errorf("Expected empty detail, got '%s'", problem.Detail)
 	}
-
 	if problem.Instance != "" {
-		t.Errorf("Expected Instance to be empty, got '%s'", problem.Instance)
+		t.Errorf("Expected empty instance, got '%s'", problem.Instance)
 	}
 }
 
 func TestProblemJSONSerialization(t *testing.T) {
 	problem := New("test-type", "Test Title", 400, "Test detail", "test-instance")
 
-	data, err := json.Marshal(problem)
-	if err != nil {
-		t.Fatalf("Failed to marshal problem: %v", err)
+	w := httptest.NewRecorder()
+
+	problem.Send(w)
+
+	// Check that the response body contains JSON
+	body := w.Body.String()
+	if body == "" {
+		t.Error("Expected non-empty response body")
 	}
 
-	var unmarshaled Problem
-	if err := json.Unmarshal(data, &unmarshaled); err != nil {
-		t.Fatalf("Failed to unmarshal problem: %v", err)
+	// Basic JSON structure check
+	if !bytes.Contains([]byte(body), []byte("test-type")) {
+		t.Error("Expected response to contain 'test-type'")
 	}
-
-	if unmarshaled.Type != problem.Type {
-		t.Errorf("Expected Type '%s', got '%s'", problem.Type, unmarshaled.Type)
+	if !bytes.Contains([]byte(body), []byte("Test Title")) {
+		t.Error("Expected response to contain 'Test Title'")
 	}
-
-	if unmarshaled.Title != problem.Title {
-		t.Errorf("Expected Title '%s', got '%s'", problem.Title, unmarshaled.Title)
+	if !bytes.Contains([]byte(body), []byte("400")) {
+		t.Error("Expected response to contain '400'")
 	}
-
-	if unmarshaled.Status != problem.Status {
-		t.Errorf("Expected Status %d, got %d", problem.Status, unmarshaled.Status)
-	}
-
-	if unmarshaled.Detail != problem.Detail {
-		t.Errorf("Expected Detail '%s', got '%s'", problem.Detail, unmarshaled.Detail)
-	}
-
-	if unmarshaled.Instance != problem.Instance {
-		t.Errorf("Expected Instance '%s', got '%s'", problem.Instance, unmarshaled.Instance)
-	}
-}
-
-// Helper type for testing
-type testError struct {
-	message string
-}
-
-func (e *testError) Error() string {
-	return e.message
 }

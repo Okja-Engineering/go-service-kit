@@ -335,3 +335,42 @@ func TestRateLimiterCleanup(t *testing.T) {
 		t.Errorf("Expected 3 limiters after cleanup, got %d", len(limiter.limiters))
 	}
 }
+
+func TestNewRateLimiterConfig(t *testing.T) {
+	// Test with no options (should use defaults)
+	config := NewRateLimiterConfig()
+	if config.RequestsPerSecond != 10.0 {
+		t.Errorf("Expected default RequestsPerSecond 10.0, got %f", config.RequestsPerSecond)
+	}
+	if config.Burst != 20 {
+		t.Errorf("Expected default Burst 20, got %d", config.Burst)
+	}
+	if config.Window != 1*time.Minute {
+		t.Errorf("Expected default Window 1m, got %v", config.Window)
+	}
+
+	// Test with custom options
+	config = NewRateLimiterConfig(
+		WithRequestsPerSecond(5.0),
+		WithBurst(10),
+		WithWindow(30*time.Second),
+	)
+	if config.RequestsPerSecond != 5.0 {
+		t.Errorf("Expected RequestsPerSecond 5.0, got %f", config.RequestsPerSecond)
+	}
+	if config.Burst != 10 {
+		t.Errorf("Expected Burst 10, got %d", config.Burst)
+	}
+	if config.Window != 30*time.Second {
+		t.Errorf("Expected Window 30s, got %v", config.Window)
+	}
+
+	// Test partial options
+	config = NewRateLimiterConfig(WithRequestsPerSecond(15.0))
+	if config.RequestsPerSecond != 15.0 {
+		t.Errorf("Expected RequestsPerSecond 15.0, got %f", config.RequestsPerSecond)
+	}
+	if config.Burst != 20 { // Should keep default
+		t.Errorf("Expected default Burst 20, got %d", config.Burst)
+	}
+}

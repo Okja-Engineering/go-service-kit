@@ -439,3 +439,118 @@ func (v *PassthroughValidator) Protect(next http.HandlerFunc) http.HandlerFunc {
 		next.ServeHTTP(w, r)
 	}
 }
+
+// Error types for better error handling
+type (
+	// ValidationError represents JWT validation errors
+	ValidationError struct {
+		Code    string
+		Message string
+		Err     error
+	}
+
+	// ConfigurationError represents configuration errors
+	ConfigurationError struct {
+		Field   string
+		Message string
+	}
+)
+
+// Error methods for better error handling
+func (e *ValidationError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("validation error [%s]: %s: %v", e.Code, e.Message, e.Err)
+	}
+	return fmt.Sprintf("validation error [%s]: %s", e.Code, e.Message)
+}
+
+func (e *ConfigurationError) Error() string {
+	return fmt.Sprintf("configuration error in %s: %s", e.Field, e.Message)
+}
+
+// IsValidationError checks if an error is a ValidationError
+func IsValidationError(err error) bool {
+	_, ok := err.(*ValidationError)
+	return ok
+}
+
+// IsConfigurationError checks if an error is a ConfigurationError
+func IsConfigurationError(err error) bool {
+	_, ok := err.(*ConfigurationError)
+	return ok
+}
+
+// Chain combines multiple middleware functions
+func Chain(middlewares ...func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		for i := len(middlewares) - 1; i >= 0; i-- {
+			next = middlewares[i](next)
+		}
+		return next
+	}
+}
+
+// Compose combines multiple handler functions
+func Compose(handlers ...func(http.HandlerFunc) http.HandlerFunc) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		for i := len(handlers) - 1; i >= 0; i-- {
+			next = handlers[i](next)
+		}
+		return next
+	}
+}
+
+// Validator interface defines the contract for JWT validation
+type Validator interface {
+	Middleware(next http.Handler) http.Handler
+	Protect(next http.HandlerFunc) http.HandlerFunc
+	ValidateRequest(r *http.Request) ValidationResult
+}
+
+// TokenExtractor interface for flexible token extraction
+type TokenExtractor interface {
+	ExtractToken(r *http.Request) string
+}
+
+// ClaimsValidator interface for flexible claims validation
+type ClaimsValidator interface {
+	ValidateClaims(claims jwt.MapClaims) error
+}
+
+// Option is a functional option for configuring JWT validation
+type Option func(*JWTValidator)
+
+// WithAllowedAlgs sets the allowed signing algorithms
+func WithAllowedAlgs(algs []string) Option {
+	return func(v *JWTValidator) {
+		v.allowedAlgs = algs
+	}
+}
+
+// WithCacheTTL sets the token cache TTL
+func WithCacheTTL(ttl time.Duration) Option {
+	return func(v *JWTValidator) {
+		v.cacheTTL = ttl
+	}
+}
+
+// WithScope sets the required scope
+func WithScope(scope string) Option {
+	return func(v *JWTValidator) {
+		v.scope = scope
+	}
+}
+
+// WithTokenExtractor sets a custom token extractor
+func WithTokenExtractor(extractor TokenExtractor) Option {
+	return func(v *JWTValidator) {
+		// Implementation would go here
+	}
+}
+
+// WithClaimsValidator sets a custom claims validator
+func WithClaimsValidator(validator ClaimsValidator) Option {
+	return func(v *JWTValidator) {
+		// Implementation would go here
+	}
+}

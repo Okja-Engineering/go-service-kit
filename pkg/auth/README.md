@@ -1,124 +1,108 @@
-# Authentication Middleware
+# Authentication Package
 
-This package provides hardened JWT authentication middleware for Go HTTP servers with comprehensive security features, supporting both JWT validation and passthrough (no-op) validation for testing or open endpoints.
+Secure JWT authentication middleware with functional configuration and interface-based design.
 
 ## Features
 
-- **🔐 Comprehensive JWT Validation** - Full RFC 7519 compliance with signature verification
-- **⏰ Time-based Security** - Expiration, issued-at, and not-before time validation
-- **🎯 Audience & Scope Validation** - Configurable audience and scope checking
-- **🚫 Token Revocation** - In-memory token blacklisting with automatic cleanup
-- **⚡ Performance Caching** - Configurable token caching to reduce validation overhead
-- **🛡️ Algorithm Validation** - Configurable allowed signing algorithms
-- **📊 Detailed Error Responses** - Proper HTTP 401 responses with error codes
-- **🔄 JWKS Auto-refresh** - Automatic JSON Web Key Set refresh with error handling
-- **🔍 Context Integration** - Easy access to JWT claims in request handlers
+- **JWT validation** - RFC 7519 compliant with signature verification and JWKS support
+- **Time-based security** - Expiration, issued-at, and not-before validation
+- **Audience & scope validation** - Configurable audience and scope checking
+- **Token revocation** - In-memory token blacklisting with automatic cleanup
+- **Performance caching** - Configurable token caching to reduce validation overhead
+- **Interface-based design** - Flexible interfaces for custom token extraction and validation
+- **Functional configuration** - Clean configuration with functional option pattern
+- **Middleware composition** - Chain and compose middleware for complex scenarios
 
-## Configuration
-
-### JWTConfig
-
-```go
-type JWTConfig struct {
-    ClientID        string        // Required: Your application's client ID
-    JWKSURL         string        // Required: URL to fetch JSON Web Key Set
-    Scope           string        // Optional: Required scope for tokens
-    AllowedAlgs     []string      // Optional: Allowed signing algorithms
-    CacheTTL        time.Duration // Optional: Token cache TTL (default: 5m)
-    RefreshInterval time.Duration // Optional: JWKS refresh interval (default: 1h)
-}
-```
-
-### Default Configuration
-
-```go
-func DefaultJWTConfig() *JWTConfig {
-    return &JWTConfig{
-        AllowedAlgs:     []string{"RS256", "RS384", "RS512", "ES256", "ES384", "ES512"},
-        CacheTTL:        5 * time.Minute,
-        RefreshInterval: 1 * time.Hour,
-    }
-}
-```
-
-## Usage
-
-### Basic Setup
+## Quick Start
 
 ```go
 package main
 
 import (
-    "log"
     "net/http"
-    "time"
-
+    
     "github.com/Okja-Engineering/go-service-kit/pkg/auth"
 )
 
 func main() {
-    // Create JWT configuration
-    config := &auth.JWTConfig{
-        ClientID: "your-client-id",
-        JWKSURL:  "https://your-auth-server/.well-known/jwks.json",
-        Scope:    "api:read",
-    }
-
-    // Create JWT validator
-    validator, err := auth.NewJWTValidator(config)
-    if err != nil {
-        log.Fatalf("Failed to create JWT validator: %v", err)
-    }
-
-    // Create router
-    mux := http.NewServeMux()
-
-    // Protected endpoint with middleware
-    mux.Handle("/api/protected", validator.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+    // Create JWT validator with functional options
+    validator := auth.NewJWTValidator(
+        auth.WithClientID("your-client-id"),
+        auth.WithJWKSURL("https://your-auth-server/.well-known/jwks.json"),
+        auth.WithScope("api:read"),
+    )
+    
+    // Protected endpoint
+    http.HandleFunc("/api/protected", validator.Protect(func(w http.ResponseWriter, r *http.Request) {
         // Get user ID from JWT claims
         userID, found := auth.GetUserIDFromContext(r.Context())
         if found {
             w.Write([]byte("Hello, " + userID + "!"))
-        } else {
-            w.Write([]byte("Hello, authenticated user!"))
-        }
-    })))
-
-    // Protected endpoint with Protect wrapper
-    mux.HandleFunc("/api/another", validator.Protect(func(w http.ResponseWriter, r *http.Request) {
-        // Get all claims from context
-        claims, found := auth.GetClaimsFromContext(r.Context())
-        if found {
-            w.Write([]byte("Authenticated with claims"))
         }
     }))
-
-    log.Fatal(http.ListenAndServe(":8080", mux))
+    
+    http.ListenAndServe(":8080", nil)
 }
 ```
 
-### Advanced Configuration
+## Configuration
+
+### Functional Options
 
 ```go
-config := &auth.JWTConfig{
-    ClientID:        "my-app",
-    JWKSURL:         "https://auth.example.com/.well-known/jwks.json",
-    Scope:           "api:write",
-    AllowedAlgs:     []string{"RS256", "ES256"},
-    CacheTTL:        10 * time.Minute,
-    RefreshInterval: 30 * time.Minute,
-}
+// Basic configuration
+validator := auth.NewJWTValidator(
+    auth.WithClientID("my-app"),
+    auth.WithJWKSURL("https://auth.example.com/.well-known/jwks.json"),
+)
 
-validator, err := auth.NewJWTValidator(config)
+// Advanced configuration
+validator := auth.NewJWTValidator(
+    auth.WithClientID("my-app"),
+    auth.WithJWKSURL("https://auth.example.com/.well-known/jwks.json"),
+    auth.WithScope("api:write"),
+    auth.WithAllowedAlgs([]string{"RS256", "ES256"}),
+    auth.WithCacheTTL(10 * time.Minute),
+)
+```
+
+### Available Options
+
+```go
+func WithClientID(clientID string) Option
+func WithJWKSURL(jwksURL string) Option
+func WithScope(scope string) Option
+func WithAllowedAlgs(algs []string) Option
+func WithCacheTTL(ttl time.Duration) Option
+func WithTokenExtractor(extractor TokenExtractor) Option
+func WithClaimsValidator(validator ClaimsValidator) Option
+```
+
+## Usage
+
+### Basic Authentication
+
+```go
+// Create validator
+validator := auth.NewJWTValidator(
+    auth.WithClientID("my-app"),
+    auth.WithJWKSURL("https://auth.example.com/.well-known/jwks.json"),
+)
+
+// Use as middleware
+router.Use(validator.Middleware)
+
+// Or protect individual handlers
+router.Get("/api/users", validator.Protect(handleGetUsers))
 ```
 
 ### Token Revocation
 
 ```go
-// Revoke a specific token (e.g., on logout)
+// Revoke a token (e.g., on logout)
 validator.RevokeToken("eyJhbGciOiJIUzI1NiIs...")
 
-// The token will be rejected in subsequent requests
+// Subsequent requests with this token will be rejected
 ```
 
 ### Development/Testing
@@ -127,45 +111,8 @@ validator.RevokeToken("eyJhbGciOiJIUzI1NiIs...")
 // Use passthrough validator for development
 validator := auth.NewPassthroughValidator()
 
-// All requests will pass through without validation
+// All requests pass through without validation
 ```
-
-## Security Features
-
-### 1. Comprehensive Token Validation
-
-- **Signature Verification** - Uses JWKS for public key validation
-- **Algorithm Validation** - Configurable allowed signing algorithms
-- **Time Validation** - Checks `exp`, `iat`, and `nbf` claims
-- **Audience Validation** - Ensures token is intended for your application
-- **Scope Validation** - Verifies required permissions
-
-### 2. Token Revocation
-
-- **In-memory Blacklist** - Immediate token revocation
-- **Automatic Cleanup** - Old revoked tokens are automatically removed
-- **Thread-safe** - Concurrent access is handled safely
-
-### 3. Performance Optimization
-
-- **Token Caching** - Validated tokens are cached to reduce validation overhead
-- **JWKS Caching** - Public keys are cached and automatically refreshed
-- **Configurable TTL** - Adjust cache duration based on your needs
-
-### 4. Error Handling
-
-- **Detailed Error Codes** - Specific error codes for different failure reasons
-- **Proper HTTP Headers** - Includes `WWW-Authenticate` header with error details
-- **JSON Error Responses** - Structured error responses for API clients
-
-## Error Codes
-
-| Code | Description |
-|------|-------------|
-| `MISSING_TOKEN` | Authorization header is missing or invalid |
-| `TOKEN_REVOKED` | Token has been revoked |
-| `INVALID_TOKEN` | Token signature or format is invalid |
-| `INVALID_CLAIMS` | Token claims are invalid (expired, wrong audience, etc.) |
 
 ## Context Integration
 
@@ -189,42 +136,191 @@ if found {
 
 ### Supported User ID Fields
 
-The `GetUserIDFromContext` function looks for user ID in these claim fields (in order):
+The `GetUserIDFromContext` function looks for user ID in these claim fields:
 1. `sub` (standard JWT subject claim)
 2. `user_id`
 3. `uid`
 4. `userid`
 
-## Integration with Rate Limiting
+## API Reference
 
-The JWT authentication works seamlessly with the rate limiting middleware:
+### Core Interfaces
 
 ```go
-// Apply rate limiting by user ID (extracted from JWT)
-router.Use(api.RateLimitByUserID(nil))
+type Validator interface {
+    Middleware(next http.Handler) http.Handler
+    Protect(handler http.HandlerFunc) http.HandlerFunc
+    ValidateRequest(r *http.Request) (*jwt.Token, error)
+}
 
-// Apply JWT authentication
-router.Use(validator.Middleware)
+type TokenExtractor interface {
+    ExtractToken(r *http.Request) string
+}
 
-// Both middlewares work together - rate limiting uses the user ID from JWT
+type ClaimsValidator interface {
+    ValidateClaims(claims jwt.MapClaims) error
+}
 ```
+
+### Configuration
+
+```go
+type JWTConfig struct {
+    ClientID        string
+    JWKSURL         string
+    Scope           string
+    AllowedAlgs     []string
+    CacheTTL        time.Duration
+    RefreshInterval time.Duration
+}
+
+func DefaultJWTConfig() *JWTConfig
+func NewJWTConfig(options ...Option) *JWTConfig
+```
+
+### Functions
+
+```go
+func NewJWTValidator(options ...Option) (Validator, error)
+func NewPassthroughValidator() Validator
+func GetClaimsFromContext(ctx context.Context) (jwt.MapClaims, bool)
+func GetUserIDFromContext(ctx context.Context) (string, bool)
+func Chain(middlewares ...func(http.Handler) http.Handler) func(http.Handler) http.Handler
+func Compose(middlewares ...func(http.Handler) http.Handler) func(http.Handler) http.Handler
+```
+
+## Examples
+
+### Complete Authentication Setup
+
+```go
+package main
+
+import (
+    "net/http"
+    "time"
+    
+    "github.com/go-chi/chi/v5"
+    "github.com/Okja-Engineering/go-service-kit/pkg/auth"
+)
+
+func main() {
+    router := chi.NewRouter()
+    
+    // Create JWT validator
+    validator := auth.NewJWTValidator(
+        auth.WithClientID("my-api"),
+        auth.WithJWKSURL("https://auth.example.com/.well-known/jwks.json"),
+        auth.WithScope("api:read"),
+        auth.WithAllowedAlgs([]string{"RS256", "ES256"}),
+        auth.WithCacheTTL(5 * time.Minute),
+    )
+    
+    // Public routes
+    router.Get("/health", handleHealth)
+    
+    // Protected routes
+    router.Group(func(r chi.Router) {
+        r.Use(validator.Middleware)
+        r.Get("/api/users", handleGetUsers)
+        r.Post("/api/users", handleCreateUser)
+        r.Get("/api/users/{id}", handleGetUser)
+    })
+    
+    http.ListenAndServe(":8080", router)
+}
+```
+
+### Custom Token Extraction
+
+```go
+// Custom token extractor for API keys
+type APIKeyExtractor struct{}
+
+func (e *APIKeyExtractor) ExtractToken(r *http.Request) string {
+    return r.Header.Get("X-API-Key")
+}
+
+// Use custom extractor
+validator := auth.NewJWTValidator(
+    auth.WithClientID("my-app"),
+    auth.WithJWKSURL("https://auth.example.com/.well-known/jwks.json"),
+    auth.WithTokenExtractor(&APIKeyExtractor{}),
+)
+```
+
+### Custom Claims Validation
+
+```go
+// Custom claims validator
+type CustomValidator struct{}
+
+func (v *CustomValidator) ValidateClaims(claims jwt.MapClaims) error {
+    // Check for required role
+    if roles, ok := claims["roles"].([]interface{}); ok {
+        for _, role := range roles {
+            if role == "admin" {
+                return nil
+            }
+        }
+    }
+    return errors.New("admin role required")
+}
+
+// Use custom validator
+validator := auth.NewJWTValidator(
+    auth.WithClientID("my-app"),
+    auth.WithJWKSURL("https://auth.example.com/.well-known/jwks.json"),
+    auth.WithClaimsValidator(&CustomValidator{}),
+)
+```
+
+### Middleware Composition
+
+```go
+// Chain multiple middleware
+authChain := auth.Chain(
+    validator.Middleware,
+    rateLimiter.Middleware,
+    logging.Middleware,
+)
+
+router.Use(authChain)
+```
+
+## Error Handling
+
+### Error Types
+
+```go
+type ValidationError struct {
+    Code    string
+    Message string
+}
+
+type ConfigurationError struct {
+    Message string
+}
+
+func IsValidationError(err error) bool
+func IsConfigurationError(err error) bool
+```
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `MISSING_TOKEN` | Authorization header is missing or invalid |
+| `TOKEN_REVOKED` | Token has been revoked |
+| `INVALID_TOKEN` | Token signature or format is invalid |
+| `INVALID_CLAIMS` | Token claims are invalid (expired, wrong audience, etc.) |
 
 ## Best Practices
 
 1. **Use HTTPS** - Always use HTTPS in production
-2. **Configure Scopes** - Use specific scopes for different endpoints
-3. **Set Appropriate TTLs** - Balance security with performance
-4. **Monitor JWKS Refresh** - Ensure your auth server's JWKS is accessible
-5. **Handle Token Revocation** - Implement logout by revoking tokens
-6. **Use Strong Algorithms** - Prefer RS256/ES256 over HS256 for API tokens
-
-## Testing
-
-See the test files for comprehensive examples of:
-- JWT validation scenarios
-- Error handling
-- Token revocation
-- Context integration
-- Configuration validation
-
-// See tests for more usage patterns.
+2. **Configure scopes** - Use specific scopes for different endpoints
+3. **Set appropriate TTLs** - Balance security with performance
+4. **Monitor JWKS refresh** - Ensure your auth server's JWKS is accessible
+5. **Handle token revocation** - Implement logout by revoking tokens
+6. **Use strong algorithms** - Prefer RS256/ES256 over HS256 for API tokens
+7. **Compose middleware** - Use middleware composition for complex scenarios

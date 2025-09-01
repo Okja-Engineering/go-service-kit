@@ -32,6 +32,39 @@ func DefaultRateLimiterConfig() *RateLimiterConfig {
 	}
 }
 
+// RateLimitOption is a functional option for configuring rate limiting
+type RateLimitOption func(*RateLimiterConfig)
+
+// WithRequestsPerSecond sets the requests per second limit
+func WithRequestsPerSecond(rps float64) RateLimitOption {
+	return func(config *RateLimiterConfig) {
+		config.RequestsPerSecond = rps
+	}
+}
+
+// WithBurst sets the burst limit
+func WithBurst(burst int) RateLimitOption {
+	return func(config *RateLimiterConfig) {
+		config.Burst = burst
+	}
+}
+
+// WithWindow sets the time window for rate limiting
+func WithWindow(window time.Duration) RateLimitOption {
+	return func(config *RateLimiterConfig) {
+		config.Window = window
+	}
+}
+
+// NewRateLimiterConfig creates a new rate limiter config with options
+func NewRateLimiterConfig(options ...RateLimitOption) *RateLimiterConfig {
+	config := DefaultRateLimiterConfig()
+	for _, option := range options {
+		option(config)
+	}
+	return config
+}
+
 // rateLimiter holds rate limiting state
 type rateLimiter struct {
 	limiters map[string]*rate.Limiter
