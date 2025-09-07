@@ -1,14 +1,13 @@
 # Database Package
 
-A production-ready PostgreSQL database package for Go services with connection pooling, health checks, migrations, and comprehensive observability.
+A production-ready PostgreSQL database package for Go services with connection pooling, health checks, and RLS multitenancy support.
 
 ## Features
 
 - **Connection Management**: Efficient connection pooling with configurable limits
 - **Health Checks**: Built-in health monitoring for load balancers and monitoring systems
-- **Migration Support**: Schema versioning with automatic migration tracking
-- **Multitenancy Support**: Multiple isolation strategies (RLS, schema-per-tenant, database-per-tenant)
-- **Production Ready**: Connection timeouts, retry logic, and graceful shutdown
+- **RLS Multitenancy**: Simple tenant context switching for Row Level Security
+- **Production Ready**: Connection timeouts, SSL support, and graceful shutdown
 - **Observability**: Connection pool statistics and metrics
 - **Functional Options**: Clean, composable configuration
 - **Thread Safe**: Full concurrency support with proper locking
@@ -24,7 +23,6 @@ import (
     
     "github.com/go-chi/chi/v5"
     "github.com/Okja-Engineering/go-service-kit/pkg/database"
-    "github.com/Okja-Engineering/go-service-kit/pkg/api"
 )
 
 func main() {
@@ -38,25 +36,10 @@ func main() {
         database.WithSSLMode("require"),
     )
 
-    // Connect to database
     if err := db.Connect(); err != nil {
         log.Fatalf("Failed to connect to database: %v", err)
     }
     defer db.Close()
-
-    // Run migrations
-    migrations := []database.Migration{
-        {
-            Version:     1,
-            Description: "Create users table",
-            UpSQL:       "CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT, email TEXT UNIQUE)",
-            DownSQL:     "DROP TABLE users",
-        },
-    }
-    
-    if err := db.Migrate(migrations); err != nil {
-        log.Fatalf("Failed to run migrations: %v", err)
-    }
 
     // Setup router with health check
     r := chi.NewRouter()
@@ -68,9 +51,10 @@ func main() {
             return
         }
         w.WriteHeader(http.StatusOK)
+        w.Write([]byte("OK"))
     })
 
-    // Start server
+    log.Println("Server starting on :8080")
     log.Fatal(http.ListenAndServe(":8080", r))
 }
 ```
@@ -79,29 +63,27 @@ func main() {
 
 ### Default Configuration
 
-The package provides secure defaults optimized for production:
+The package provides secure defaults:
 
 ```go
 config := database.DefaultConfig()
-// Host: "localhost"
+// Host: localhost
 // Port: 5432
-// User: "postgres"
-// Password: ""
-// Database: "postgres"
-// SSLMode: "require"
+// User: postgres
+// Database: postgres
+// SSLMode: require (secure default)
 // MaxOpenConns: 25
 // MaxIdleConns: 5
-// ConnMaxLifetime: 5m
-// ConnMaxIdleTime: 5m
-// ConnectTimeout: 10s
-// QueryTimeout: 30s
-// RetryAttempts: 3
-// RetryDelay: 1s
+// ConnMaxLifetime: 5 minutes
+// ConnMaxIdleTime: 5 minutes
+// ConnectTimeout: 10 seconds
+// QueryTimeout: 30 seconds
+// RLSContextVarName: "app.current_tenant_id"
 ```
 
 ### Custom Configuration
 
-Use functional options for clean, composable configuration:
+Use functional options for clean configuration:
 
 ```go
 db := database.NewPostgreSQLWithOptions(
@@ -111,58 +93,68 @@ db := database.NewPostgreSQLWithOptions(
     database.WithPassword("secure_password"),
     database.WithDatabase("production_db"),
     database.WithSSLMode("require"),
-    database.WithMaxOpenConns(100),
-    database.WithMaxIdleConns(20),
-    database.WithConnMaxLifetime(10 * time.Minute),
-    database.WithConnMaxIdleTime(10 * time.Minute),
-    database.WithConnectTimeout(5 * time.Second),
-    database.WithQueryTimeout(60 * time.Second),
-    	database.WithRetryAttempts(5),
-	database.WithRetryDelay(2 * time.Second),
-	database.WithMultitenancy(true),
-	database.WithDefaultIsolation("rls"),
-	database.WithTenantSchemaPrefix("tenant_"),
+    database.WithMaxOpenConns(50),
+    database.WithMaxIdleConns(10),
+    database.WithConnMaxLifetime(10*time.Minute),
+    database.WithConnMaxIdleTime(5*time.Minute),
+    database.WithConnectTimeout(5*time.Second),
+    database.WithQueryTimeout(60*time.Second),
+    database.WithRLSContextVarName("app.tenant_id"),
 )
 ```
 
-## Usage Examples
+## RLS Multitenancy Support
 
-### Basic Database Operations
+The database package provides simple Row Level Security (RLS) multitenancy support:
 
 ```go
-// Get the underlying sql.DB for direct operations
-sqlDB := db.GetDB()
+db := database.NewPostgreSQLWithOptions(
+    database.WithHost("localhost"),
+    database.WithPort(5432),
+    database.WithUser("postgres"),
+    database.WithPassword("password"),
+    database.WithDatabase("myapp"),
+    database.WithRLSContextVarName("app.current_tenant_id"),
+)
 
-// Execute a query
-rows, err := sqlDB.Query("SELECT id, name FROM users WHERE active = $1", true)
-if err != nil {
-    log.Printf("Query failed: %v", err)
-    return
+// Set tenant context for the current session
+ctx := context.Background()
+if err := db.SetTenantContext(ctx, "tenant123"); err != nil {
+    log.Printf("Failed to set tenant context: %v", err)
 }
-defer rows.Close()
 
-// Process results
-for rows.Next() {
-    var id int
-    var name string
-    if err := rows.Scan(&id, &name); err != nil {
-        log.Printf("Row scan failed: %v", err)
-        continue
-    }
-    log.Printf("User %d: %s", id, name)
+// All subsequent queries respect RLS policies
+rows, err := db.GetDB().Query("SELECT * FROM users")
+// This will only return users for tenant123
+
+// Clear tenant context when done
+if err := db.ClearTenantContext(ctx); err != nil {
+    log.Printf("Failed to clear tenant context: %v", err)
 }
 ```
 
-### Health Monitoring
+### RLS Setup
+
+You'll need to set up RLS policies in your database. Here's an example:
+
+```sql
+-- Enable RLS on your tables
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+
+-- Create a policy that filters by tenant
+CREATE POLICY tenant_isolation ON users
+    FOR ALL TO PUBLIC
+    USING (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- Set the context variable name to match your configuration
+-- The package will automatically set this when you call SetTenantContext()
+```
+
+## Connection Pool Statistics
+
+Monitor your database connection usage:
 
 ```go
-// Check database health
-if err := db.HealthCheck(); err != nil {
-    log.Printf("Database health check failed: %v", err)
-    // Handle unhealthy state
-}
-
-// Get connection pool statistics
 stats := db.GetStats()
 log.Printf("Open connections: %d, In use: %d, Idle: %d", 
     stats.OpenConnections, stats.InUse, stats.Idle)
@@ -170,466 +162,65 @@ log.Printf("Wait count: %d, Wait duration: %v",
     stats.WaitCount, stats.WaitDuration)
 ```
 
-### Database Migrations
+## Error Handling
+
+Always check for errors and handle them appropriately:
 
 ```go
-migrations := []database.Migration{
-	{
-		Version:     1,
-		Description: "Create users table",
-		UpSQL:       "CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT, email TEXT UNIQUE)",
-		DownSQL:     "DROP TABLE users",
-	},
-	{
-		Version:     2,
-		Description: "Add user roles",
-		UpSQL:       "ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'",
-		DownSQL:     "ALTER TABLE users DROP COLUMN role",
-	},
-	{
-		Version:     3,
-		Description: "Create sessions table",
-		UpSQL:       "CREATE TABLE sessions (id UUID PRIMARY KEY, user_id INTEGER REFERENCES users(id), expires_at TIMESTAMP)",
-		DownSQL:     "DROP TABLE sessions",
-	},
+if err := db.Connect(); err != nil {
+    log.Fatalf("Failed to connect to database: %v", err)
 }
 
-if err := db.Migrate(migrations); err != nil {
-	log.Fatalf("Migration failed: %v", err)
+if err := db.HealthCheck(); err != nil {
+    log.Printf("Database health check failed: %v", err)
+    // Handle unhealthy database
 }
-```
 
-### RLS Multitenancy Support
-
-The database package provides robust Row Level Security (RLS) multitenancy support, which is the recommended approach for most applications:
-
-```go
-db := database.NewPostgreSQLWithOptions(
-	database.WithHost("localhost"),
-	database.WithPort(5432),
-	database.WithUser("postgres"),
-	database.WithPassword("password"),
-	database.WithDatabase("myapp"),
-	database.WithMultitenancy(true),
-)
-
-// Set tenant context for the current session
 if err := db.SetTenantContext(ctx, "tenant123"); err != nil {
-	log.Printf("Failed to set tenant context: %v", err)
-}
-
-// All subsequent queries respect RLS policies
-rows, err := db.GetDB().Query("SELECT * FROM users")
-```
-
-#### Tenant-Aware Database Instance
-```go
-// Create a new database instance for a specific tenant
-tenantDB := db.WithTenant("tenant123")
-
-// Use the tenant-specific database
-if err := tenantDB.SetTenantContext(ctx, "tenant123"); err != nil {
-	log.Printf("Failed to set tenant context: %v", err)
-}
-```
-
-### Integration with API Health Checks
-
-```go
-package main
-
-import (
-    "net/http"
-    
-    "github.com/go-chi/chi/v5"
-    "github.com/Okja-Engineering/go-service-kit/pkg/api"
-    "github.com/Okja-Engineering/go-service-kit/pkg/database"
-)
-
-func main() {
-    db := database.NewPostgreSQLWithOptions(
-        database.WithHost("localhost"),
-        database.WithPort(5432),
-        database.WithUser("postgres"),
-        database.WithPassword("password"),
-        database.WithDatabase("myapp"),
-    )
-
-    if err := db.Connect(); err != nil {
-        log.Fatalf("Failed to connect to database: %v", err)
-    }
-    defer db.Close()
-
-    r := chi.NewRouter()
-    
-    // Add health endpoint with database check
-    r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-        if err := db.HealthCheck(); err != nil {
-            api.ReturnErrorJSON(w, "Database unhealthy", http.StatusServiceUnavailable)
-            return
-        }
-        
-        stats := db.GetStats()
-        api.ReturnJSON(w, map[string]interface{}{
-            "status": "healthy",
-            "database": map[string]interface{}{
-                "status": "connected",
-                "connections": map[string]interface{}{
-                    "open": stats.OpenConnections,
-                    "in_use": stats.InUse,
-                    "idle": stats.Idle,
-                },
-            },
-        }, http.StatusOK)
-    })
-
-    log.Fatal(http.ListenAndServe(":8080", r))
-}
-```
-
-### Graceful Shutdown
-
-```go
-package main
-
-import (
-    "context"
-    "log"
-    "net/http"
-    "os"
-    "os/signal"
-    "syscall"
-    "time"
-    
-    "github.com/Okja-Engineering/go-service-kit/pkg/database"
-)
-
-func main() {
-    db := database.NewPostgreSQLWithOptions(
-        database.WithHost("localhost"),
-        database.WithPort(5432),
-        database.WithUser("postgres"),
-        database.WithPassword("password"),
-        database.WithDatabase("myapp"),
-    )
-
-    if err := db.Connect(); err != nil {
-        log.Fatalf("Failed to connect to database: %v", err)
-    }
-
-    server := &http.Server{
-        Addr:    ":8080",
-        Handler: setupRouter(db),
-    }
-
-    // Start server in goroutine
-    go func() {
-        if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-            log.Fatalf("Server failed: %v", err)
-        }
-    }()
-
-    // Wait for interrupt signal
-    quit := make(chan os.Signal, 1)
-    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-    <-quit
-
-    log.Println("Shutting down server...")
-
-    // Graceful shutdown with timeout
-    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-    defer cancel()
-
-    if err := server.Shutdown(ctx); err != nil {
-        log.Fatalf("Server forced to shutdown: %v", err)
-    }
-
-    // Close database connection
-    if err := db.Close(); err != nil {
-        log.Printf("Error closing database: %v", err)
-    }
-
-    log.Println("Server exited gracefully")
+    log.Printf("Failed to set tenant context: %v", err)
+    // Handle tenant context error
 }
 ```
 
 ## Best Practices
 
-### Connection Pool Sizing
+### 1. Connection Management
+- Use connection pooling (enabled by default)
+- Set appropriate timeouts for your use case
+- Always close connections when done
+- Monitor connection pool statistics
 
-- **MaxOpenConns**: Set to 2-4x the number of CPU cores for most applications
-- **MaxIdleConns**: Keep some connections warm, typically 25-50% of MaxOpenConns
-- **ConnMaxLifetime**: Rotate connections every 5-15 minutes to prevent stale connections
+### 2. RLS Multitenancy
+- Always set tenant context before queries
+- Clear tenant context when done
+- Use consistent tenant ID formats
+- Test RLS policies thoroughly
 
-```go
-db := database.NewPostgreSQLWithOptions(
-    database.WithMaxOpenConns(50),    // 2-4x CPU cores
-    database.WithMaxIdleConns(25),    // 50% of max open
-    database.WithConnMaxLifetime(10 * time.Minute),
-    database.WithConnMaxIdleTime(5 * time.Minute),
-)
-```
+### 3. Security
+- Use SSL connections in production (`sslmode=require`)
+- Don't hardcode credentials in code
+- Use environment variables for configuration
+- Validate tenant IDs before setting context
 
-### SSL Configuration
-
-- **Production**: Always use `require` or `verify-full`
-- **Development**: Can use `disable` for local development
-- **Testing**: Use `disable` for test databases
-
-```go
-// Production
-database.WithSSLMode("require")
-
-// Development
-database.WithSSLMode("disable")
-```
-
-### Timeout Configuration
-
-- **ConnectTimeout**: 5-10 seconds for most networks
-- **QueryTimeout**: 30-60 seconds for complex queries
-- **Context Timeouts**: Always use context with timeouts for queries
-
-```go
-db := database.NewPostgreSQLWithOptions(
-    database.WithConnectTimeout(5 * time.Second),
-    database.WithQueryTimeout(30 * time.Second),
-)
-```
-
-### Migration Best Practices
-
-1. **Version Numbers**: Use sequential integers starting from 1
-2. **Descriptions**: Clear, concise descriptions of what the migration does
-3. **Rollback**: Always provide DownSQL for rollback capability
-4. **Testing**: Test migrations on staging before production
-5. **Backup**: Always backup before running migrations in production
-
-```go
-migrations := []database.Migration{
-    {
-        Version:     1,
-        Description: "Create users table with email and name",
-        UpSQL:       "CREATE TABLE users (id SERIAL PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL)",
-        DownSQL:     "DROP TABLE users",
-    },
-    {
-        Version:     2,
-        Description: "Add user roles and active status",
-        UpSQL:       "ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user', ADD COLUMN active BOOLEAN DEFAULT true",
-        DownSQL:     "ALTER TABLE users DROP COLUMN role, DROP COLUMN active",
-    },
-}
-```
-
-### Error Handling
-
-Always check for errors and handle them appropriately:
-
-```go
-// Connect with retry logic
-var err error
-for i := 0; i < 3; i++ {
-    if err = db.Connect(); err == nil {
-        break
-    }
-    log.Printf("Connection attempt %d failed: %v", i+1, err)
-    time.Sleep(time.Duration(i+1) * time.Second)
-}
-
-if err != nil {
-    log.Fatalf("Failed to connect after retries: %v", err)
-}
-
-// Health check in health endpoint
-if err := db.HealthCheck(); err != nil {
-    log.Printf("Health check failed: %v", err)
-    // Return unhealthy status
-    return
-}
-```
-
-### RLS Multitenancy Best Practices
-
-1. **RLS Implementation**
-   ```sql
-   -- Enable RLS on tables
-   ALTER TABLE users ENABLE ROW LEVEL SECURITY;
-   
-   -- Create RLS policies
-   CREATE POLICY tenant_isolation ON users
-       FOR ALL USING (tenant_id = current_setting('app.current_tenant_id')::text);
-   ```
-
-2. **Tenant Context Management**
-   - Always validate tenant context before database operations
-   - Use consistent tenant ID formats across your application
-   - Implement proper tenant context propagation in middleware
-   - Clear tenant context when done to prevent data leakage
-
-3. **Tenant Context Propagation**
-   ```go
-   // In your HTTP middleware
-   func TenantMiddleware(next http.Handler) http.Handler {
-       return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-           tenantID := extractTenantID(r)
-           if tenantID != "" {
-               ctx := context.WithValue(r.Context(), "tenant_id", tenantID)
-               r = r.WithContext(ctx)
-           }
-           next.ServeHTTP(w, r)
-       })
-   }
-   
-   // In your handlers
-   func (h *Handler) GetUsers(w http.ResponseWriter, r *http.Request) {
-       tenantID := r.Context().Value("tenant_id").(string)
-       
-       // Set tenant context for this database session
-       if err := h.db.SetTenantContext(r.Context(), tenantID); err != nil {
-           http.Error(w, "Failed to set tenant context", http.StatusInternalServerError)
-           return
-       }
-       
-       // Clear tenant context when done
-       defer h.db.ClearTenantContext(r.Context())
-       
-       // All queries now respect tenant isolation
-       users, err := h.db.GetDB().Query("SELECT * FROM users")
-       // ... handle results
-   }
-   ```
-
-4. **Performance Monitoring**
-   ```go
-   // Get tenant-specific query statistics
-   stats, err := db.GetTenantQueryStats(ctx)
-   if err == nil {
-       log.Printf("Tenant %s: %d queries, %d slow queries, avg duration: %v",
-           stats.TenantID, stats.TotalQueries, stats.SlowQueries, stats.AverageDuration)
-   }
-   ```
-
-## Monitoring and Observability
-
-### Health Check Endpoint
-
-```go
-r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-    if err := db.HealthCheck(); err != nil {
-        w.Header().Set("Content-Type", "application/json")
-        w.WriteHeader(http.StatusServiceUnavailable)
-        json.NewEncoder(w).Encode(map[string]interface{}{
-            "status": "unhealthy",
-            "error":  err.Error(),
-            "timestamp": time.Now().UTC(),
-        })
-        return
-    }
-
-    stats := db.GetStats()
-    w.Header().Set("Content-Type", "application/json")
-    w.WriteHeader(http.StatusOK)
-    json.NewEncoder(w).Encode(map[string]interface{}{
-        "status": "healthy",
-        "database": map[string]interface{}{
-            "status": "connected",
-            "connections": stats,
-        },
-        "timestamp": time.Now().UTC(),
-    })
-})
-```
-
-### Metrics Collection
-
-```go
-// Get connection pool statistics
-stats := db.GetStats()
-
-// Log metrics for monitoring
-log.Printf("DB_METRICS open=%d in_use=%d idle=%d wait_count=%d wait_duration=%v",
-    stats.OpenConnections, stats.InUse, stats.Idle, 
-    stats.WaitCount, stats.WaitDuration)
-
-// Send to monitoring system (Prometheus, DataDog, etc.)
-// This is just an example - implement according to your monitoring stack
-```
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Connection Refused**
-   - Check if PostgreSQL is running
-   - Verify host and port configuration
-   - Check firewall settings
-
-2. **Authentication Failed**
-   - Verify username and password
-   - Check pg_hba.conf configuration
-   - Ensure user has proper permissions
-
-3. **Connection Pool Exhausted**
-   - Increase MaxOpenConns
-   - Check for connection leaks in your application
-   - Monitor connection usage patterns
-
-4. **Migration Failures**
-   - Check SQL syntax
-   - Verify database permissions
-   - Check for conflicting migrations
-
-### Debug Mode
-
-Enable debug logging for troubleshooting:
-
-```go
-// Set log level for debugging
-log.SetFlags(log.LstdFlags | log.Lshortfile)
-
-// Test connection with verbose logging
-if err := db.Connect(); err != nil {
-    log.Printf("Connection failed: %v", err)
-    // Check configuration
-    log.Printf("Config: %+v", db.config)
-}
-```
+### 4. Performance
+- Tune connection pool settings for your workload
+- Use appropriate query timeouts
+- Monitor connection pool statistics
+- Consider connection lifetime settings
 
 ## API Reference
 
-### Types
-
-- `Database` - Main interface for database operations
-- `PostgreSQL` - PostgreSQL implementation
-- `Config` - Database configuration
-- `ConnectionStats` - Connection pool statistics
-- `Migration` - Database migration definition
-- `TenantContext` - Tenant information and isolation strategy
-
-### Functions
-
-- `NewPostgreSQL(config *Config) *PostgreSQL` - Create new PostgreSQL instance
-- `NewPostgreSQLWithOptions(options ...Option) *PostgreSQL` - Create with options
-- `DefaultConfig() *Config` - Get secure default configuration
-- `NewConfig(options ...Option) *Config` - Create configuration with options
-
-### Methods
+### Database Interface
 
 - `Connect() error` - Establish database connection
 - `Close() error` - Close database connection
 - `GetDB() *sql.DB` - Get underlying sql.DB instance
 - `HealthCheck() error` - Check database health
 - `GetStats() ConnectionStats` - Get connection pool statistics
-- `Migrate(migrations []Migration) error` - Run database migrations
-- `GetMigrationVersion() (int, error)` - Get current migration version
-- `WithTenant(tenantID string) Database` - Create tenant-specific database instance
-- `SetTenantContext(ctx context.Context, tenantID string) error` - Set tenant context for session
-- `GetTenantContext(ctx context.Context) (TenantContext, error)` - Get current tenant context
-- `CreateTenantSchema(ctx context.Context, tenantID string) error` - Create tenant schema
-- `UseTenantSchema(ctx context.Context, tenantID string) error` - Switch to tenant schema
+- `SetTenantContext(ctx context.Context, tenantID string) error` - Set tenant context for RLS
+- `ClearTenantContext(ctx context.Context) error` - Clear tenant context
 
-### Options
+### Configuration Options
 
 - `WithHost(host string)` - Set database host
 - `WithPort(port int)` - Set database port
@@ -637,23 +228,66 @@ if err := db.Connect(); err != nil {
 - `WithPassword(password string)` - Set database password
 - `WithDatabase(database string)` - Set database name
 - `WithSSLMode(sslMode string)` - Set SSL mode
-- `WithMaxOpenConns(maxOpen int)` - Set maximum open connections
-- `WithMaxIdleConns(maxIdle int)` - Set maximum idle connections
-- `WithConnMaxLifetime(lifetime time.Duration)` - Set connection max lifetime
-- `WithConnMaxIdleTime(idleTime time.Duration)` - Set connection max idle time
-- `WithConnectTimeout(timeout time.Duration)` - Set connection timeout
-- `WithQueryTimeout(timeout time.Duration)` - Set query timeout
-- `WithRetryAttempts(attempts int)` - Set retry attempts
-- `WithRetryDelay(delay time.Duration)` - Set retry delay
-- `WithMultitenancy(enabled bool)` - Enable multitenancy support
-- `WithDefaultIsolation(isolation string)` - Set default isolation strategy
-- `WithTenantSchemaPrefix(prefix string)` - Set tenant schema prefix
+- `WithMaxOpenConns(maxOpenConns int)` - Set max open connections
+- `WithMaxIdleConns(maxIdleConns int)` - Set max idle connections
+- `WithConnMaxLifetime(connMaxLifetime time.Duration)` - Set connection max lifetime
+- `WithConnMaxIdleTime(connMaxIdleTime time.Duration)` - Set connection max idle time
+- `WithConnectTimeout(connectTimeout time.Duration)` - Set connection timeout
+- `WithQueryTimeout(queryTimeout time.Duration)` - Set query timeout
+- `WithRLSContextVarName(varName string)` - Set RLS context variable name
 
-## Dependencies
+### Types
 
-- `github.com/lib/pq` - PostgreSQL driver
-- Standard library packages: `database/sql`, `context`, `sync`, `time`
+- `ConnectionStats` - Connection pool statistics
+- `TenantContext` - Tenant context information
+- `Config` - Database configuration
+
+## Migration Strategy
+
+This package focuses on connection management and RLS support. For database migrations, use PostgreSQL's native tools:
+
+- **pg_migrate**: Popular migration tool for PostgreSQL
+- **Flyway**: Database migration tool with PostgreSQL support
+- **Raw SQL files**: Version your SQL files and apply them manually
+- **Custom migration scripts**: Build your own migration system
+
+The package provides a clean connection interface that works well with any migration strategy.
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Connection Refused**
+   - Check host and port
+   - Verify PostgreSQL is running
+   - Check firewall settings
+
+2. **Authentication Failed**
+   - Verify username and password
+   - Check PostgreSQL user permissions
+   - Ensure user can connect to database
+
+3. **SSL Connection Failed**
+   - Check SSL mode setting
+   - Verify SSL certificates
+   - Consider using `sslmode=disable` for development
+
+4. **Connection Pool Exhausted**
+   - Increase MaxOpenConns
+   - Check for connection leaks in your application
+   - Monitor connection usage patterns
+
+### Debug Mode
+
+Enable debug logging for troubleshooting:
+
+```go
+// Set log level for debugging
+log.SetLevel(log.DebugLevel)
+
+// The package will log connection events
+```
 
 ## License
 
-MIT License - see LICENSE file for details.
+This package is part of the go-service-kit and follows the same license terms.
