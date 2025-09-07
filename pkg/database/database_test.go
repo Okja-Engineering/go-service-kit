@@ -884,10 +884,13 @@ func TestTenantContextExpiration(t *testing.T) {
 func TestTenantIDPatternValidation(t *testing.T) {
 	// Test default pattern
 	pattern := `^[a-zA-Z0-9_-]{3,50}$`
-	matched, err := regexp.MatchString(pattern, "valid-tenant_123")
+	re, err := regexp.Compile(pattern)
 	if err != nil {
 		t.Errorf("Failed to compile regex pattern: %v", err)
+		return
 	}
+
+	matched := re.MatchString("valid-tenant_123")
 	if !matched {
 		t.Error("Expected 'valid-tenant_123' to match pattern")
 	}
@@ -902,7 +905,7 @@ func TestTenantIDPatternValidation(t *testing.T) {
 	}
 
 	for _, id := range invalidIDs {
-		matched, _ := regexp.MatchString(pattern, id)
+		matched := re.MatchString(id)
 		if matched {
 			t.Errorf("Expected '%s' to not match pattern", id)
 		}

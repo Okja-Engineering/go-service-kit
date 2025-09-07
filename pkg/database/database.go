@@ -619,8 +619,8 @@ func (p *PostgreSQL) SetTenantContext(ctx context.Context, tenantID string) erro
 	defer p.tenantMu.Unlock()
 
 	// Set RLS context variable
-	query := fmt.Sprintf(`SELECT set_config('%s', $1, false)`, p.config.RLSContextVarName)
-	_, err := p.db.ExecContext(ctx, query, tenantID)
+	query := `SELECT set_config($1, $2, false)`
+	_, err := p.db.ExecContext(ctx, query, p.config.RLSContextVarName, tenantID)
 	if err != nil {
 		return fmt.Errorf("failed to set RLS tenant context: %w", err)
 	}
@@ -657,9 +657,9 @@ func (p *PostgreSQL) GetTenantContext(ctx context.Context) (TenantContext, error
 	}
 
 	// Try to get from database context
-	query := fmt.Sprintf(`SELECT current_setting('%s', true)`, p.config.RLSContextVarName)
+	query := `SELECT current_setting($1, true)`
 	var tenantID string
-	err := p.db.QueryRowContext(ctx, query).Scan(&tenantID)
+	err := p.db.QueryRowContext(ctx, query, p.config.RLSContextVarName).Scan(&tenantID)
 	if err != nil {
 		return TenantContext{}, fmt.Errorf("failed to get RLS tenant context: %w", err)
 	}
@@ -684,8 +684,8 @@ func (p *PostgreSQL) ClearTenantContext(ctx context.Context) error {
 	defer p.tenantMu.Unlock()
 
 	// Clear RLS context variable
-	query := fmt.Sprintf(`SELECT set_config('%s', '', false)`, p.config.RLSContextVarName)
-	_, err := p.db.ExecContext(ctx, query)
+	query := `SELECT set_config($1, '', false)`
+	_, err := p.db.ExecContext(ctx, query, p.config.RLSContextVarName)
 	if err != nil {
 		return fmt.Errorf("failed to clear RLS tenant context: %w", err)
 	}
@@ -773,7 +773,7 @@ func (p *PostgreSQL) VerifyRLSIsolation(ctx context.Context, tableName string) e
 	}
 
 	// Test query to verify RLS is working
-	testQuery := fmt.Sprintf(`SELECT COUNT(*) FROM %s LIMIT 1`, tableName)
+	testQuery := `SELECT COUNT(*) FROM ` + tableName + ` LIMIT 1`
 
 	ctx, cancel := context.WithTimeout(ctx, p.config.QueryTimeout)
 	defer cancel()
@@ -875,7 +875,8 @@ func (p *PostgreSQL) initializeQueryStats(tenantID string) {
 }
 
 // updateQueryStats updates query statistics for the current tenant
-func (p *PostgreSQL) updateQueryStats(tenantID string, duration time.Duration, queryType, tableName string, success bool) {
+func (p *PostgreSQL) updateQueryStats(tenantID string, duration time.Duration, queryType, tableName string,
+	success bool) {
 	if !p.config.EnableQueryStats {
 		return
 	}
